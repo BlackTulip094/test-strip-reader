@@ -23,7 +23,11 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon.png",
+      "web": {
+        "output": "static",
+        "favicon": "./assets/images/favicon.png"
+      }
     },
     "plugins": [
       [
