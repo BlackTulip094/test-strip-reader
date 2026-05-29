@@ -1,15 +1,17 @@
-import React, { useRef, useState } from 'react';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as MediaLibrary from 'expo-media-library';
+import { useRef, useState } from 'react';
 import {
-  SafeAreaView,
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  StatusBar,
   Image,
   Platform,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-import { CameraView, useCameraPermissions } from 'expo-camera';
 
 const theme = {
   bg: '#F7FAFC',
@@ -82,6 +84,35 @@ function CameraPage({ goHome }) {
     }
   }
 
+  async function downloadPhoto() {
+    try {
+      if (!photoUri) return;
+
+      if (Platform.OS === 'web') {
+        const link = document.createElement('a');
+        link.href = photoUri;
+        link.download = `test-strip-photo-${Date.now()}.jpg`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      }
+
+      const { granted } = await MediaLibrary.requestPermissionsAsync();
+
+      if (!granted) {
+        alert('Album permission is needed to save the photo.');
+        return;
+      }
+
+      await MediaLibrary.saveToLibraryAsync(photoUri);
+      alert('Photo saved to your album!');
+    } catch (error) {
+      console.error(error);
+      alert('Failed to save photo.');
+    }
+  }
+
   function handleCameraPress(event) {
     const { locationX, locationY } = event.nativeEvent;
     setMarker({ x: Math.round(locationX), y: Math.round(locationY) });
@@ -116,63 +147,65 @@ function CameraPage({ goHome }) {
 
   return (
     <SafeAreaView style={styles.cameraScreen}>
-      <View style={styles.cameraHeader}>
-        <TouchableOpacity onPress={goHome}>
-          <Text style={styles.backText}>← Back</Text>
+      <ScrollView contentContainerStyle={styles.cameraScrollContent}>
+        <View style={styles.cameraHeader}>
+          <TouchableOpacity onPress={goHome}>
+            <Text style={styles.backText}>← Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.cameraTitle}>Camera</Text>
+          <TouchableOpacity onPress={() => setMarker(null)}>
+            <Text style={styles.clearText}>Clear</Text>
+          </TouchableOpacity>
+        </View>
+
+        <TouchableOpacity
+          activeOpacity={1}
+          style={styles.cameraBox}
+          onPress={handleCameraPress}
+        >
+          {photoUri ? (
+            <Image source={{ uri: photoUri }} style={styles.cameraPreview} />
+          ) : (
+            <CameraView ref={cameraRef} style={styles.cameraPreview} facing="back" />
+          )}
+
+          <View pointerEvents="none" style={styles.alignmentOverlay}>
+            <OverlayBox label="Ferrous Iron Scale" style={styles.ironScaleBox} />
+            <OverlayBox label="Grey Reference" style={styles.greyReferenceBox} />
+            <OverlayBox label="Sample Film" style={styles.sampleFilmBox} />
+
+            {marker && (
+              <View style={[styles.markerWrap, { left: marker.x - 18, top: marker.y - 18 }]}>
+                <View style={styles.markerCircle} />
+                <View style={styles.markerHorizontal} />
+                <View style={styles.markerVertical} />
+                <Text style={styles.markerText}>({marker.x}, {marker.y})</Text>
+              </View>
+            )}
+          </View>
         </TouchableOpacity>
-        <Text style={styles.cameraTitle}>Camera</Text>
-        <TouchableOpacity onPress={() => setMarker(null)}>
-          <Text style={styles.clearText}>Clear</Text>
-        </TouchableOpacity>
-      </View>
 
-      <TouchableOpacity
-        activeOpacity={1}
-        style={styles.cameraBox}
-        onPress={handleCameraPress}
-      >
-        {photoUri ? (
-          <Image source={{ uri: photoUri }} style={styles.cameraPreview} />
-        ) : (
-          <CameraView ref={cameraRef} style={styles.cameraPreview} facing="back" />
-        )}
+        <Text style={styles.cameraHint}>
+          Tap the image to mark the reading/sample location.
+        </Text>
 
-        <View pointerEvents="none" style={styles.alignmentOverlay}>
-          <OverlayBox label="Ferrous Iron Scale" style={styles.ironScaleBox} />
-          <OverlayBox label="Grey Reference" style={styles.greyReferenceBox} />
-          <OverlayBox label="Sample Film" style={styles.sampleFilmBox} />
-
-          {marker && (
-            <View style={[styles.markerWrap, { left: marker.x - 18, top: marker.y - 18 }]}>
-              <View style={styles.markerCircle} />
-              <View style={styles.markerHorizontal} />
-              <View style={styles.markerVertical} />
-              <Text style={styles.markerText}>({marker.x}, {marker.y})</Text>
-            </View>
+        <View style={styles.cameraActions}>
+          {photoUri ? (
+            <>
+              <TouchableOpacity style={styles.secondaryButton} onPress={() => setPhotoUri(null)}>
+                <Text style={styles.secondaryButtonText}>Retake</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.primaryButton} onPress={downloadPhoto}>
+                <Text style={styles.primaryButtonText}>Download</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <TouchableOpacity style={styles.captureButton} onPress={takePhoto} disabled={isTakingPhoto}>
+              <View style={styles.captureButtonInner} />
+            </TouchableOpacity>
           )}
         </View>
-      </TouchableOpacity>
-
-      <Text style={styles.cameraHint}>
-        Tap the image to mark the reading/sample location.
-      </Text>
-
-      <View style={styles.cameraActions}>
-        {photoUri ? (
-          <>
-            <TouchableOpacity style={styles.secondaryButton} onPress={() => setPhotoUri(null)}>
-              <Text style={styles.secondaryButtonText}>Retake</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.primaryButton} onPress={goHome}>
-              <Text style={styles.primaryButtonText}>Use Photo</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          <TouchableOpacity style={styles.captureButton} onPress={takePhoto} disabled={isTakingPhoto}>
-            <View style={styles.captureButtonInner} />
-          </TouchableOpacity>
-        )}
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -382,6 +415,16 @@ const styles = StyleSheet.create({
     padding: 18,
     alignItems: 'center',
     gap: 12,
+  },
+  cameraScrollContent: {
+    paddingBottom: 40,
+  },
+  cameraBox: {
+    margin: 18,
+    borderRadius: 24,
+    overflow: 'hidden',
+    backgroundColor: '#000000',
+    height: 360,
   },
   primaryButton: {
     backgroundColor: theme.brand,
