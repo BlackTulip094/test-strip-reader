@@ -35,7 +35,7 @@ function Card({ title, onPress, active = false }) {
   );
 }
 
-function HomePage({ goToCamera }) {
+function HomePage({ goToCamera, goToAlbum }) {
   return (
     <SafeAreaView style={styles.screen}>
       <StatusBar barStyle="dark-content" />
@@ -47,7 +47,7 @@ function HomePage({ goToCamera }) {
 
       <View style={styles.grid}>
         <Card title="Camera" onPress={goToCamera} active />
-        <Card title="Album" />
+        <Card title="Album" onPress={goToAlbum} active />
         <Card title="History" />
         <Card title="Report" />
       </View>
@@ -63,7 +63,7 @@ function OverlayBox({ label, style }) {
   );
 }
 
-function CameraPage({ goHome }) {
+function CameraPage({ goHome, addToAlbum }) {
   const cameraRef = useRef(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [photoUri, setPhotoUri] = useState(null);
@@ -79,6 +79,7 @@ function CameraPage({ goHome }) {
       setPhotoUri(photo.uri);
     } catch (error) {
       console.log(error);
+      alert('Failed to take photo.');
     } finally {
       setIsTakingPhoto(false);
     }
@@ -116,27 +117,29 @@ function CameraPage({ goHome }) {
   async function uploadPhoto() {
     if (!photoUri) return;
 
-    // Placeholder for future server upload
-    alert('Upload to server.');
+    alert('Upload button clicked. Server upload will be added later.');
 
-    // Later, you’ll replace this with something like:
     /*
     const formData = new FormData();
-  
+
     formData.append('photo', {
       uri: photoUri,
       name: 'test-strip-photo.jpg',
       type: 'image/jpeg',
     });
-  
+
     await fetch('https://your-server.com/upload', {
       method: 'POST',
       body: formData,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
     });
     */
+  }
+
+  function saveToTemporaryAlbum() {
+    if (!photoUri) return;
+
+    addToAlbum(photoUri);
+    alert('Photo added to temporary album.');
   }
 
   function handleCameraPress(event) {
@@ -161,9 +164,11 @@ function CameraPage({ goHome }) {
             ? 'Your browser will ask to use your webcam.'
             : 'Your phone will ask to use the camera.'}
         </Text>
+
         <TouchableOpacity style={styles.primaryButton} onPress={requestPermission}>
           <Text style={styles.primaryButtonText}>Allow Camera</Text>
         </TouchableOpacity>
+
         <TouchableOpacity style={styles.secondaryButton} onPress={goHome}>
           <Text style={styles.secondaryButtonText}>Back Home</Text>
         </TouchableOpacity>
@@ -178,17 +183,15 @@ function CameraPage({ goHome }) {
           <TouchableOpacity onPress={goHome}>
             <Text style={styles.backText}>← Back</Text>
           </TouchableOpacity>
+
           <Text style={styles.cameraTitle}>Camera</Text>
+
           <TouchableOpacity onPress={() => setMarker(null)}>
             <Text style={styles.clearText}>Clear</Text>
           </TouchableOpacity>
         </View>
 
-        <TouchableOpacity
-          activeOpacity={1}
-          style={styles.cameraBox}
-          onPress={handleCameraPress}
-        >
+        <TouchableOpacity activeOpacity={1} style={styles.cameraBox} onPress={handleCameraPress}>
           {photoUri ? (
             <Image source={{ uri: photoUri }} style={styles.cameraPreview} />
           ) : (
@@ -205,15 +208,15 @@ function CameraPage({ goHome }) {
                 <View style={styles.markerCircle} />
                 <View style={styles.markerHorizontal} />
                 <View style={styles.markerVertical} />
-                <Text style={styles.markerText}>({marker.x}, {marker.y})</Text>
+                <Text style={styles.markerText}>
+                  ({marker.x}, {marker.y})
+                </Text>
               </View>
             )}
           </View>
         </TouchableOpacity>
 
-        <Text style={styles.cameraHint}>
-          Tap the image to mark the reading/sample location.
-        </Text>
+        <Text style={styles.cameraHint}>Tap the image to mark the reading/sample location.</Text>
 
         <View style={styles.cameraActions}>
           {photoUri ? (
@@ -221,6 +224,7 @@ function CameraPage({ goHome }) {
               <TouchableOpacity style={styles.secondaryButton} onPress={() => setPhotoUri(null)}>
                 <Text style={styles.secondaryButtonText}>Retake</Text>
               </TouchableOpacity>
+
               <View style={styles.photoButtonRow}>
                 <TouchableOpacity style={styles.primaryButton} onPress={downloadPhoto}>
                   <Text style={styles.primaryButtonText}>Download</Text>
@@ -229,10 +233,18 @@ function CameraPage({ goHome }) {
                 <TouchableOpacity style={styles.primaryButton} onPress={uploadPhoto}>
                   <Text style={styles.primaryButtonText}>Upload</Text>
                 </TouchableOpacity>
+
+                <TouchableOpacity style={styles.primaryButton} onPress={saveToTemporaryAlbum}>
+                  <Text style={styles.primaryButtonText}>Add to Album</Text>
+                </TouchableOpacity>
               </View>
             </>
           ) : (
-            <TouchableOpacity style={styles.captureButton} onPress={takePhoto} disabled={isTakingPhoto}>
+            <TouchableOpacity
+              style={styles.captureButton}
+              onPress={takePhoto}
+              disabled={isTakingPhoto}
+            >
               <View style={styles.captureButtonInner} />
             </TouchableOpacity>
           )}
@@ -242,14 +254,58 @@ function CameraPage({ goHome }) {
   );
 }
 
+function AlbumPage({ goHome, album }) {
+  return (
+    <SafeAreaView style={styles.screen}>
+      <View style={styles.cameraHeader}>
+        <TouchableOpacity onPress={goHome}>
+          <Text style={styles.backText}>← Back</Text>
+        </TouchableOpacity>
+
+        <Text style={styles.cameraTitle}>Album</Text>
+
+        <View style={{ width: 52 }} />
+      </View>
+
+      {album.length === 0 ? (
+        <View style={styles.albumEmpty}>
+          <Text style={styles.titleSmall}>No photos yet</Text>
+          <Text style={styles.subtitleCenter}>Take a photo and add it to the album.</Text>
+        </View>
+      ) : (
+        <ScrollView contentContainerStyle={styles.albumGrid}>
+          {album.map((uri, index) => (
+            <Image key={`${uri}-${index}`} source={{ uri }} style={styles.albumImage} />
+          ))}
+        </ScrollView>
+      )}
+    </SafeAreaView>
+  );
+}
+
 export default function App() {
   const [page, setPage] = useState('home');
+  const [album, setAlbum] = useState([]);
 
   if (page === 'camera') {
-    return <CameraPage goHome={() => setPage('home')} />;
+    return (
+      <CameraPage
+        goHome={() => setPage('home')}
+        addToAlbum={(photoUri) => setAlbum((prev) => [photoUri, ...prev])}
+      />
+    );
   }
 
-  return <HomePage goToCamera={() => setPage('camera')} />;
+  if (page === 'album') {
+    return <AlbumPage goHome={() => setPage('home')} album={album} />;
+  }
+
+  return (
+    <HomePage
+      goToCamera={() => setPage('camera')}
+      goToAlbum={() => setPage('album')}
+    />
+  );
 }
 
 const styles = StyleSheet.create({
@@ -264,6 +320,7 @@ const styles = StyleSheet.create({
     padding: 24,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 12,
   },
   header: {
     marginBottom: 24,
@@ -324,6 +381,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.bg,
   },
+  cameraScrollContent: {
+    paddingBottom: 40,
+  },
   cameraHeader: {
     padding: 18,
     flexDirection: 'row',
@@ -331,6 +391,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   backText: {
+    color: theme.brand,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  clearText: {
     color: theme.brand,
     fontSize: 16,
     fontWeight: '800',
@@ -345,16 +410,14 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     overflow: 'hidden',
     backgroundColor: '#000000',
-    height: 460,
+    height: 360,
   },
   cameraPreview: {
     flex: 1,
     width: '100%',
   },
-  cameraOverlay: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+  alignmentOverlay: {
+    ...StyleSheet.absoluteFillObject,
   },
   overlayBox: {
     position: 'absolute',
@@ -371,9 +434,6 @@ const styles = StyleSheet.create({
     color: 'lime',
     fontSize: 12,
     fontWeight: '900',
-  },
-  alignmentOverlay: {
-    ...StyleSheet.absoluteFillObject,
   },
   ironScaleBox: {
     left: '10%',
@@ -432,11 +492,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '900',
   },
-  clearText: {
-    color: theme.brand,
-    fontSize: 16,
-    fontWeight: '800',
-  },
   cameraHint: {
     color: theme.muted,
     textAlign: 'center',
@@ -447,16 +502,6 @@ const styles = StyleSheet.create({
     padding: 18,
     alignItems: 'center',
     gap: 12,
-  },
-  cameraScrollContent: {
-    paddingBottom: 40,
-  },
-  cameraBox: {
-    margin: 18,
-    borderRadius: 24,
-    overflow: 'hidden',
-    backgroundColor: '#000000',
-    height: 360,
   },
   primaryButton: {
     backgroundColor: theme.brand,
@@ -505,5 +550,23 @@ const styles = StyleSheet.create({
     gap: 12,
     flexWrap: 'wrap',
     justifyContent: 'center',
+  },
+  albumEmpty: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  albumGrid: {
+    padding: 18,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  albumImage: {
+    width: '47%',
+    height: 180,
+    borderRadius: 16,
+    backgroundColor: '#000000',
   },
 });
