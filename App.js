@@ -113,6 +113,32 @@ function CameraPage({ goHome }) {
     }
   }
 
+  async function uploadPhoto() {
+    if (!photoUri) return;
+
+    // Placeholder for future server upload
+    alert('Upload to server.');
+
+    // Later, you’ll replace this with something like:
+    /*
+    const formData = new FormData();
+  
+    formData.append('photo', {
+      uri: photoUri,
+      name: 'test-strip-photo.jpg',
+      type: 'image/jpeg',
+    });
+  
+    await fetch('https://your-server.com/upload', {
+      method: 'POST',
+      body: formData,
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    */
+  }
+
   function handleCameraPress(event) {
     const { locationX, locationY } = event.nativeEvent;
     setMarker({ x: Math.round(locationX), y: Math.round(locationY) });
@@ -195,9 +221,15 @@ function CameraPage({ goHome }) {
               <TouchableOpacity style={styles.secondaryButton} onPress={() => setPhotoUri(null)}>
                 <Text style={styles.secondaryButtonText}>Retake</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.primaryButton} onPress={downloadPhoto}>
-                <Text style={styles.primaryButtonText}>Download</Text>
-              </TouchableOpacity>
+              <View style={styles.photoButtonRow}>
+                <TouchableOpacity style={styles.primaryButton} onPress={downloadPhoto}>
+                  <Text style={styles.primaryButtonText}>Download</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.primaryButton} onPress={uploadPhoto}>
+                  <Text style={styles.primaryButtonText}>Upload</Text>
+                </TouchableOpacity>
+              </View>
             </>
           ) : (
             <TouchableOpacity style={styles.captureButton} onPress={takePhoto} disabled={isTakingPhoto}>
@@ -467,5 +499,11 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: 28,
     backgroundColor: theme.brand,
+  },
+  photoButtonRow: {
+    flexDirection: 'row',
+    gap: 12,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
   },
 });
