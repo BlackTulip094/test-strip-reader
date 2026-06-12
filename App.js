@@ -55,13 +55,43 @@ function HomePage({ goToCamera, goToAlbum }) {
   );
 }
 
-function OverlayBox({ label, style }) {
+function OverlayBox({ label, style, color }) {
   return (
-    <View style={[styles.overlayBox, style]}>
-      <Text style={styles.overlayLabel}>{label}</Text>
+    <View style={[styles.overlayBox, { borderColor: color }, style]}>
+      <Text style={[styles.overlayLabel, { color }]}>{label}</Text>
     </View>
   );
 }
+
+const TEST_UIS = {
+  amine: {
+    label: 'Amine',
+    color: '#F97316',
+    boxes: {
+      top: 'Amine Scale',
+      left: 'Grey Reference',
+      right: 'Amine Sample',
+    },
+  },
+  ferrous: {
+    label: 'Ferrous',
+    color: 'lime',
+    boxes: {
+      top: 'Ferrous Iron Scale',
+      left: 'Grey Reference',
+      right: 'Sample Film',
+    },
+  },
+  ph: {
+    label: 'pH',
+    color: '#A855F7',
+    boxes: {
+      top: 'pH Color Scale',
+      left: 'Neutral Reference',
+      right: 'pH Strip',
+    },
+  },
+};
 
 function CameraPage({ goHome, addToAlbum }) {
   const cameraRef = useRef(null);
@@ -69,6 +99,9 @@ function CameraPage({ goHome, addToAlbum }) {
   const [photoUri, setPhotoUri] = useState(null);
   const [isTakingPhoto, setIsTakingPhoto] = useState(false);
   const [marker, setMarker] = useState(null);
+
+  const [selectedTest, setSelectedTest] = useState('ferrous');
+  const currentUI = TEST_UIS[selectedTest];
 
   async function takePhoto() {
     if (!cameraRef.current || isTakingPhoto) return;
@@ -191,6 +224,31 @@ function CameraPage({ goHome, addToAlbum }) {
           </TouchableOpacity>
         </View>
 
+        <View style={styles.testSelector}>
+          {Object.entries(TEST_UIS).map(([key, item]) => (
+            <TouchableOpacity
+              key={key}
+              style={[
+                styles.testOption,
+                selectedTest === key && {
+                  borderColor: item.color,
+                  backgroundColor: '#FFFFFF',
+                },
+              ]}
+              onPress={() => setSelectedTest(key)}
+            >
+              <Text
+                style={[
+                  styles.testOptionText,
+                  selectedTest === key && { color: item.color },
+                ]}
+              >
+                {item.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
         <TouchableOpacity activeOpacity={1} style={styles.cameraBox} onPress={handleCameraPress}>
           {photoUri ? (
             <Image source={{ uri: photoUri }} style={styles.cameraPreview} />
@@ -199,9 +257,21 @@ function CameraPage({ goHome, addToAlbum }) {
           )}
 
           <View pointerEvents="none" style={styles.alignmentOverlay}>
-            <OverlayBox label="Ferrous Iron Scale" style={styles.ironScaleBox} />
-            <OverlayBox label="Grey Reference" style={styles.greyReferenceBox} />
-            <OverlayBox label="Sample Film" style={styles.sampleFilmBox} />
+            <OverlayBox
+              label={currentUI.boxes.top}
+              color={currentUI.color}
+              style={styles.ironScaleBox}
+            />
+            <OverlayBox
+              label={currentUI.boxes.left}
+              color={currentUI.color}
+              style={styles.greyReferenceBox}
+            />
+            <OverlayBox
+              label={currentUI.boxes.right}
+              color={currentUI.color}
+              style={styles.sampleFilmBox}
+            />
 
             {marker && (
               <View style={[styles.markerWrap, { left: marker.x - 18, top: marker.y - 18 }]}>
@@ -568,5 +638,24 @@ const styles = StyleSheet.create({
     height: 180,
     borderRadius: 16,
     backgroundColor: '#000000',
+  },
+  testSelector: {
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    marginBottom: 4,
+  },
+  testOption: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: theme.line,
+    backgroundColor: '#EEF2F6',
+  },
+  testOptionText: {
+    color: theme.muted,
+    fontWeight: '900',
   },
 });
