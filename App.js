@@ -87,7 +87,7 @@ const TEST_UIS = {
     color: '#A855F7',
     boxes: {
       top: 'pH Color Scale',
-      left: 'Neutral Reference',
+      left: 'Grey Reference',
       right: 'pH Strip',
     },
   },
