@@ -506,10 +506,10 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   ironScaleBox: {
-    left: '10%',
-    top: '8%',
-    width: '80%',
-    height: '28%',
+    left: '15%',
+    top: '15%',
+    width: '70%',
+    height: '20%',
   },
   greyReferenceBox: {
     left: '8%',
