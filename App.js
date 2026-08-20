@@ -55,10 +55,12 @@ function HomePage({ goToCamera, goToAlbum }) {
   );
 }
 
-function OverlayBox({ label, style, color }) {
+function OverlayBox({ label, style, color, labelStyle }) {
   return (
     <View style={[styles.overlayBox, { borderColor: color }, style]}>
-      <Text style={[styles.overlayLabel, { color }]}>{label}</Text>
+      <Text style={[styles.overlayLabel, { color }, labelStyle]}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -262,15 +264,19 @@ function CameraPage({ goHome, addToAlbum }) {
               color={currentUI.color}
               style={styles.ironScaleBox}
             />
+
             <OverlayBox
               label={currentUI.boxes.left}
               color={currentUI.color}
               style={styles.greyReferenceBox}
+              labelStyle={styles.labelBelow}
             />
+
             <OverlayBox
               label={currentUI.boxes.right}
               color={currentUI.color}
               style={styles.sampleFilmBox}
+              labelStyle={styles.labelBelow}
             />
 
             {marker && (
@@ -504,6 +510,10 @@ const styles = StyleSheet.create({
     color: 'lime',
     fontSize: 12,
     fontWeight: '900',
+  },
+  labelBelow: {
+    top: '100%',
+    marginTop: 5,
   },
   ironScaleBox: {
     left: '15%',
