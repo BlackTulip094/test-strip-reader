@@ -522,13 +522,13 @@ const styles = StyleSheet.create({
     height: '21%',
   },
   greyReferenceBox: {
-    left: '10%',
+    left: '9.5%',
     top: '50%',
     width: '28%',
     height: '18%',
   },
   sampleFilmBox: {
-    left: '53%',
+    left: '52.5%',
     top: '50%',
     width: '38%',
     height: '18%',
