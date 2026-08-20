@@ -512,15 +512,15 @@ const styles = StyleSheet.create({
     height: '21%',
   },
   greyReferenceBox: {
-    left: '9%',
+    left: '10%',
     top: '50%',
     width: '28%',
     height: '18%',
   },
   sampleFilmBox: {
-    left: '52%',
+    left: '53%',
     top: '50%',
-    width: '36%',
+    width: '38%',
     height: '18%',
   },
   markerWrap: {
