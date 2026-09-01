@@ -22,6 +22,9 @@ const theme = {
   line: '#D9E2EC',
 };
 
+const UPLOAD_URL_API =
+  'https://nngfk9vqni.execute-api.us-east-1.amazonaws.com/upload-url';
+
 function Card({ title, onPress, active = false }) {
   return (
     <TouchableOpacity
@@ -105,15 +108,23 @@ function CameraPage({ goHome, addToAlbum }) {
   const [selectedTest, setSelectedTest] = useState('ferrous');
   const currentUI = TEST_UIS[selectedTest];
 
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState('');
+
   async function takePhoto() {
     if (!cameraRef.current || isTakingPhoto) return;
 
     try {
       setIsTakingPhoto(true);
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.9 });
+
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.9,
+      });
+
       setPhotoUri(photo.uri);
+      setUploadMessage('');
     } catch (error) {
-      console.log(error);
+      console.error(error);
       alert('Failed to take photo.');
     } finally {
       setIsTakingPhoto(false);
@@ -150,24 +161,74 @@ function CameraPage({ goHome, addToAlbum }) {
   }
 
   async function uploadPhoto() {
-    if (!photoUri) return;
+    if (!photoUri || isUploading) return;
 
-    alert('Upload button clicked. Server upload will be added later.');
+    try {
+      setIsUploading(true);
+      setUploadMessage('Preparing upload...');
 
-    /*
-    const formData = new FormData();
+      // Convert the captured image URI into image data.
+      const photoResponse = await fetch(photoUri);
 
-    formData.append('photo', {
-      uri: photoUri,
-      name: 'test-strip-photo.jpg',
-      type: 'image/jpeg',
-    });
+      if (!photoResponse.ok) {
+        throw new Error('Could not read the captured photo.');
+      }
 
-    await fetch('https://your-server.com/upload', {
-      method: 'POST',
-      body: formData,
-    });
-    */
+      const photoBlob = await photoResponse.blob();
+      const contentType = photoBlob.type || 'image/jpeg';
+
+      // Request a temporary upload URL from API Gateway.
+      const urlResponse = await fetch(UPLOAD_URL_API, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contentType,
+          testType: selectedTest,
+        }),
+      });
+
+      const responseText = await urlResponse.text();
+      let uploadData;
+
+      try {
+        uploadData = JSON.parse(responseText);
+      } catch {
+        throw new Error('The upload service returned an invalid response.');
+      }
+
+      if (!urlResponse.ok || !uploadData.uploadUrl) {
+        throw new Error(
+          uploadData.error || 'Could not create an upload URL.'
+        );
+      }
+
+      setUploadMessage('Uploading photo...');
+
+      // Upload the image directly to S3.
+      const s3Response = await fetch(uploadData.uploadUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': contentType,
+        },
+        body: photoBlob,
+      });
+
+      if (!s3Response.ok) {
+        throw new Error(`S3 upload failed (${s3Response.status}).`);
+      }
+
+      setUploadMessage('Photo uploaded successfully!');
+    } catch (error) {
+      console.error(error);
+
+      setUploadMessage(
+        `Upload failed: ${error.message || 'Unknown error'}`
+      );
+    } finally {
+      setIsUploading(false);
+    }
   }
 
   function saveToTemporaryAlbum() {
@@ -297,7 +358,17 @@ function CameraPage({ goHome, addToAlbum }) {
         <View style={styles.cameraActions}>
           {photoUri ? (
             <>
-              <TouchableOpacity style={styles.secondaryButton} onPress={() => setPhotoUri(null)}>
+              <TouchableOpacity
+                style={[
+                  styles.secondaryButton,
+                  isUploading && styles.buttonDisabled,
+                ]}
+                onPress={() => {
+                  setPhotoUri(null);
+                  setUploadMessage('');
+                }}
+                disabled={isUploading}
+              >
                 <Text style={styles.secondaryButtonText}>Retake</Text>
               </TouchableOpacity>
 
@@ -306,14 +377,35 @@ function CameraPage({ goHome, addToAlbum }) {
                   <Text style={styles.primaryButtonText}>Download</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity style={styles.primaryButton} onPress={uploadPhoto}>
-                  <Text style={styles.primaryButtonText}>Upload</Text>
+                <TouchableOpacity
+                  style={[
+                    styles.primaryButton,
+                    isUploading && styles.buttonDisabled,
+                  ]}
+                  onPress={uploadPhoto}
+                  disabled={isUploading}
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {isUploading ? 'Uploading...' : 'Upload'}
+                  </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity style={styles.primaryButton} onPress={saveToTemporaryAlbum}>
                   <Text style={styles.primaryButtonText}>Add to Album</Text>
                 </TouchableOpacity>
               </View>
+
+              {uploadMessage ? (
+                <Text
+                  style={[
+                    styles.uploadMessage,
+                    uploadMessage.startsWith('Upload failed') &&
+                    styles.uploadError,
+                  ]}
+                >
+                  {uploadMessage}
+                </Text>
+              ) : null}
             </>
           ) : (
             <TouchableOpacity
@@ -668,4 +760,16 @@ const styles = StyleSheet.create({
     color: theme.muted,
     fontWeight: '900',
   },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
+  uploadMessage: {
+    color: theme.brand,
+    fontSize: 14,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  uploadError: {
+    color: '#B91C1C',
+  }
 });
