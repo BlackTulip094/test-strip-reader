@@ -25,6 +25,9 @@ const theme = {
 const UPLOAD_URL_API =
   'https://nngfk9vqni.execute-api.us-east-1.amazonaws.com/upload-url';
 
+const clamp = (value, min, max) =>
+  Math.min(max, Math.max(min, value));
+
 function Card({ title, onPress, active = false }) {
   return (
     <TouchableOpacity
@@ -104,6 +107,11 @@ function CameraPage({ goHome, addToAlbum }) {
   const [photoUri, setPhotoUri] = useState(null);
   const [isTakingPhoto, setIsTakingPhoto] = useState(false);
   const [marker, setMarker] = useState(null);
+
+  const [previewSize, setPreviewSize] = useState({
+    width: 0,
+    height: 0,
+  });
 
   const [selectedTest, setSelectedTest] = useState('ferrous');
   const currentUI = TEST_UIS[selectedTest];
@@ -239,8 +247,70 @@ function CameraPage({ goHome, addToAlbum }) {
   }
 
   function handleCameraPress(event) {
-    const { locationX, locationY } = event.nativeEvent;
-    setMarker({ x: Math.round(locationX), y: Math.round(locationY) });
+    const nativeEvent = event.nativeEvent || {};
+
+    let x = nativeEvent.locationX;
+    let y = nativeEvent.locationY;
+
+    // React Native Web may not provide locationX/locationY.
+    if (
+      (!Number.isFinite(x) || !Number.isFinite(y)) &&
+      Platform.OS === 'web'
+    ) {
+      const rect = event.currentTarget?.getBoundingClientRect?.();
+
+      const clientX =
+        nativeEvent.clientX ??
+        event.clientX ??
+        (Number.isFinite(nativeEvent.pageX)
+          ? nativeEvent.pageX - window.scrollX
+          : undefined);
+
+      const clientY =
+        nativeEvent.clientY ??
+        event.clientY ??
+        (Number.isFinite(nativeEvent.pageY)
+          ? nativeEvent.pageY - window.scrollY
+          : undefined);
+
+      if (
+        rect &&
+        Number.isFinite(clientX) &&
+        Number.isFinite(clientY)
+      ) {
+        x = clientX - rect.left;
+        y = clientY - rect.top;
+      } else {
+        x = nativeEvent.offsetX;
+        y = nativeEvent.offsetY;
+      }
+    }
+
+    // Do not display a marker if valid coordinates are unavailable.
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+
+    setMarker({
+      x: Math.round(
+        clamp(
+          x,
+          0,
+          previewSize.width > 0
+            ? previewSize.width
+            : Number.MAX_SAFE_INTEGER
+        )
+      ),
+      y: Math.round(
+        clamp(
+          y,
+          0,
+          previewSize.height > 0
+            ? previewSize.height
+            : Number.MAX_SAFE_INTEGER
+        )
+      ),
+    });
   }
 
   if (!permission) {
@@ -312,7 +382,15 @@ function CameraPage({ goHome, addToAlbum }) {
           ))}
         </View>
 
-        <TouchableOpacity activeOpacity={1} style={styles.cameraBox} onPress={handleCameraPress}>
+        <TouchableOpacity
+          activeOpacity={1}
+          style={styles.cameraBox}
+          onPress={handleCameraPress}
+          onLayout={(event) => {
+            const { width, height } = event.nativeEvent.layout;
+            setPreviewSize({ width, height });
+          }}
+        >
           {photoUri ? (
             <Image source={{ uri: photoUri }} style={styles.cameraPreview} />
           ) : (
