@@ -93,6 +93,184 @@ function rgbToLab({ r, g, b }) {
   };
 }
 
+function rgbToHex({ r, g, b }) {
+  return `#${[r, g, b]
+    .map((value) =>
+      Math.round(value)
+        .toString(16)
+        .padStart(2, '0')
+    )
+    .join('')}`.toUpperCase();
+}
+
+function getCoverTransform(previewSize, photoSize) {
+  const scale = Math.max(
+    previewSize.width / photoSize.width,
+    previewSize.height / photoSize.height
+  );
+
+  return {
+    scale,
+    offsetX:
+      (previewSize.width - photoSize.width * scale) / 2,
+    offsetY:
+      (previewSize.height - photoSize.height * scale) / 2,
+  };
+}
+
+async function measurePointColor(
+  photoUri,
+  previewSize,
+  point,
+  previewRadius = 5
+) {
+  if (Platform.OS !== 'web') {
+    throw new Error(
+      'Point color measurement currently works on web only.'
+    );
+  }
+
+  if (!previewSize.width || !previewSize.height) {
+    throw new Error('Camera preview size is unavailable.');
+  }
+
+  if (typeof createImageBitmap !== 'function') {
+    throw new Error(
+      'This browser cannot decode the captured image.'
+    );
+  }
+
+  const response = await fetch(photoUri);
+
+  if (!response.ok) {
+    throw new Error('Could not read the captured photo.');
+  }
+
+  const blob = await response.blob();
+  const bitmap = await createImageBitmap(blob);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+
+  const context = canvas.getContext('2d', {
+    willReadFrequently: true,
+  });
+
+  if (!context) {
+    bitmap.close?.();
+    throw new Error('Canvas analysis is unavailable.');
+  }
+
+  context.drawImage(bitmap, 0, 0);
+
+  try {
+    const photoSize = {
+      width: bitmap.width,
+      height: bitmap.height,
+    };
+
+    const { scale, offsetX, offsetY } =
+      getCoverTransform(previewSize, photoSize);
+
+    const centerX = clamp(
+      (point.x - offsetX) / scale,
+      0,
+      photoSize.width - 1
+    );
+
+    const centerY = clamp(
+      (point.y - offsetY) / scale,
+      0,
+      photoSize.height - 1
+    );
+
+    // Five displayed pixels in each direction.
+    const photoRadius = Math.max(
+      1,
+      Math.ceil(previewRadius / scale)
+    );
+
+    const left = clamp(
+      Math.floor(centerX - photoRadius),
+      0,
+      photoSize.width - 1
+    );
+
+    const top = clamp(
+      Math.floor(centerY - photoRadius),
+      0,
+      photoSize.height - 1
+    );
+
+    const right = clamp(
+      Math.ceil(centerX + photoRadius) + 1,
+      1,
+      photoSize.width
+    );
+
+    const bottom = clamp(
+      Math.ceil(centerY + photoRadius) + 1,
+      1,
+      photoSize.height
+    );
+
+    const imageData = context.getImageData(
+      left,
+      top,
+      Math.max(1, right - left),
+      Math.max(1, bottom - top)
+    );
+
+    let red = 0;
+    let green = 0;
+    let blue = 0;
+    let pixelCount = 0;
+
+    for (
+      let index = 0;
+      index < imageData.data.length;
+      index += 4
+    ) {
+      const alpha = imageData.data[index + 3];
+
+      if (alpha < 200) continue;
+
+      red += imageData.data[index];
+      green += imageData.data[index + 1];
+      blue += imageData.data[index + 2];
+      pixelCount += 1;
+    }
+
+    if (!pixelCount) {
+      throw new Error(
+        'No visible pixels were found near this point.'
+      );
+    }
+
+    const rgb = {
+      r: red / pixelCount,
+      g: green / pixelCount,
+      b: blue / pixelCount,
+    };
+
+    return {
+      rgb,
+      hex: rgbToHex(rgb),
+      lab: rgbToLab(rgb),
+      point,
+      photoPoint: {
+        x: Math.round(centerX),
+        y: Math.round(centerY),
+      },
+    };
+  } finally {
+    bitmap.close?.();
+    canvas.width = 1;
+    canvas.height = 1;
+  }
+}
+
 function mapSampleBoxToPhoto(previewSize, photoSize) {
   // The photo is displayed with resizeMode="cover".
   const scale = Math.max(
@@ -381,6 +559,7 @@ const TEST_UIS = {
 
 function CameraPage({ goHome, addToAlbum }) {
   const cameraRef = useRef(null);
+  const pointMeasurementIdRef = useRef(0);
   const [permission, requestPermission] = useCameraPermissions();
   const [photoUri, setPhotoUri] = useState(null);
   const [isTakingPhoto, setIsTakingPhoto] = useState(false);
@@ -401,6 +580,14 @@ function CameraPage({ goHome, addToAlbum }) {
   const [analysisResult, setAnalysisResult] = useState(null);
   const [analysisError, setAnalysisError] = useState('');
 
+  const [isMeasuringPoint, setIsMeasuringPoint] =
+    useState(false);
+
+  const [pointColor, setPointColor] = useState(null);
+
+  const [pointColorError, setPointColorError] =
+    useState('');
+
   async function takePhoto() {
     if (!cameraRef.current || isTakingPhoto) return;
 
@@ -413,6 +600,13 @@ function CameraPage({ goHome, addToAlbum }) {
 
       setPhotoUri(photo.uri);
       setUploadMessage('');
+      pointMeasurementIdRef.current += 1;
+      setMarker(null);
+      setPointColor(null);
+      setPointColorError('');
+      setIsMeasuringPoint(false);
+      setAnalysisResult(null);
+      setAnalysisError('');
     } catch (error) {
       console.error(error);
       alert('Failed to take photo.');
@@ -553,18 +747,18 @@ function CameraPage({ goHome, addToAlbum }) {
     alert('Photo added to temporary album.');
   }
 
-  function handleCameraPress(event) {
+  async function handleCameraPress(event) {
     const nativeEvent = event.nativeEvent || {};
 
     let x = nativeEvent.locationX;
     let y = nativeEvent.locationY;
 
-    // React Native Web may not provide locationX/locationY.
     if (
       (!Number.isFinite(x) || !Number.isFinite(y)) &&
       Platform.OS === 'web'
     ) {
-      const rect = event.currentTarget?.getBoundingClientRect?.();
+      const rect =
+        event.currentTarget?.getBoundingClientRect?.();
 
       const clientX =
         nativeEvent.clientX ??
@@ -593,12 +787,11 @@ function CameraPage({ goHome, addToAlbum }) {
       }
     }
 
-    // Do not display a marker if valid coordinates are unavailable.
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       return;
     }
 
-    setMarker({
+    const point = {
       x: Math.round(
         clamp(
           x,
@@ -608,6 +801,7 @@ function CameraPage({ goHome, addToAlbum }) {
             : Number.MAX_SAFE_INTEGER
         )
       ),
+
       y: Math.round(
         clamp(
           y,
@@ -617,7 +811,52 @@ function CameraPage({ goHome, addToAlbum }) {
             : Number.MAX_SAFE_INTEGER
         )
       ),
-    });
+    };
+
+    setMarker(point);
+
+    // Only measure color after a photo has been captured.
+    if (!photoUri) return;
+
+    const measurementId =
+      pointMeasurementIdRef.current + 1;
+
+    pointMeasurementIdRef.current = measurementId;
+
+    try {
+      setIsMeasuringPoint(true);
+      setPointColorError('');
+
+      const result = await measurePointColor(
+        photoUri,
+        previewSize,
+        point
+      );
+
+      if (
+        pointMeasurementIdRef.current === measurementId
+      ) {
+        setPointColor(result);
+      }
+    } catch (error) {
+      console.error(error);
+
+      if (
+        pointMeasurementIdRef.current === measurementId
+      ) {
+        setPointColor(null);
+        setPointColorError(
+          error.message ||
+          'Point color measurement failed.'
+        );
+      }
+    } finally {
+      if (
+        pointMeasurementIdRef.current === measurementId
+      ) {
+        setIsMeasuringPoint(false);
+      }
+    }
   }
 
   if (!permission) {
@@ -659,7 +898,15 @@ function CameraPage({ goHome, addToAlbum }) {
 
           <Text style={styles.cameraTitle}>Camera</Text>
 
-          <TouchableOpacity onPress={() => setMarker(null)}>
+          <TouchableOpacity
+            onPress={() => {
+              pointMeasurementIdRef.current += 1;
+              setMarker(null);
+              setPointColor(null);
+              setPointColorError('');
+              setIsMeasuringPoint(false);
+            }}
+          >
             <Text style={styles.clearText}>Clear</Text>
           </TouchableOpacity>
         </View>
@@ -742,7 +989,76 @@ function CameraPage({ goHome, addToAlbum }) {
           </View>
         </TouchableOpacity>
 
-        <Text style={styles.cameraHint}>Tap the image to mark the reading/sample location.</Text>
+        <Text style={styles.cameraHint}>
+          {photoUri
+            ? 'Tap the captured photo to measure an 11 × 11 color area.'
+            : 'Tap the image to mark the reading/sample location.'}
+        </Text>
+
+        {photoUri ? (
+          <View style={styles.pointColorCard}>
+            <View style={styles.pointColorHeader}>
+              <Text style={styles.pointColorTitle}>
+                Point Color
+              </Text>
+
+              <Text style={styles.pointColorMeta}>
+                5 px screen radius
+              </Text>
+            </View>
+
+            {isMeasuringPoint ? (
+              <Text style={styles.pointColorPrompt}>
+                Measuring color…
+              </Text>
+            ) : pointColorError ? (
+              <Text style={styles.uploadError}>
+                Measurement failed: {pointColorError}
+              </Text>
+            ) : pointColor ? (
+              <View style={styles.pointColorContent}>
+                <View
+                  style={[
+                    styles.pointColorSwatch,
+                    {
+                      backgroundColor: pointColor.hex,
+                    },
+                  ]}
+                />
+
+                <View style={styles.pointColorValues}>
+                  <Text style={styles.pointColorValue}>
+                    RGB {Math.round(pointColor.rgb.r)},{' '}
+                    {Math.round(pointColor.rgb.g)},{' '}
+                    {Math.round(pointColor.rgb.b)}
+                  </Text>
+
+                  <Text style={styles.pointColorValue}>
+                    HEX {pointColor.hex}
+                  </Text>
+
+                  <Text style={styles.pointColorSecondary}>
+                    Lab {pointColor.lab.l.toFixed(1)},{' '}
+                    {pointColor.lab.a.toFixed(1)},{' '}
+                    {pointColor.lab.b.toFixed(1)}
+                  </Text>
+
+                  <Text style={styles.pointColorSecondary}>
+                    Tap ({pointColor.point.x},{' '}
+                    {pointColor.point.y}) · Photo pixel (
+                    {pointColor.photoPoint.x},{' '}
+                    {pointColor.photoPoint.y})
+                  </Text>
+                </View>
+              </View>
+            ) : (
+              <Text style={styles.pointColorPrompt}>
+                Tap anywhere on the captured photo to inspect
+                its color.
+              </Text>
+            )}
+          </View>
+        ) : null}
 
         <View style={styles.cameraActions}>
           {photoUri ? (
@@ -753,8 +1069,15 @@ function CameraPage({ goHome, addToAlbum }) {
                   isUploading && styles.buttonDisabled,
                 ]}
                 onPress={() => {
+                  pointMeasurementIdRef.current += 1;
                   setPhotoUri(null);
                   setUploadMessage('');
+                  setMarker(null);
+                  setPointColor(null);
+                  setPointColorError('');
+                  setIsMeasuringPoint(false);
+                  setAnalysisResult(null);
+                  setAnalysisError('');
                 }}
                 disabled={isUploading}
               >
@@ -1213,6 +1536,70 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginHorizontal: 18,
     marginTop: 2,
+  },
+  pointColorCard: {
+    marginHorizontal: 18,
+    marginTop: 12,
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.line,
+    backgroundColor: theme.card,
+    gap: 10,
+  },
+
+  pointColorHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+
+  pointColorTitle: {
+    color: theme.ink,
+    fontSize: 17,
+    fontWeight: '900',
+  },
+
+  pointColorMeta: {
+    color: theme.muted,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  pointColorContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+
+  pointColorSwatch: {
+    width: 54,
+    height: 54,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.line,
+  },
+
+  pointColorValues: {
+    flex: 1,
+    gap: 3,
+  },
+
+  pointColorValue: {
+    color: theme.ink,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+
+  pointColorSecondary: {
+    color: theme.muted,
+    fontSize: 12,
+  },
+
+  pointColorPrompt: {
+    color: theme.muted,
+    fontSize: 14,
   },
   cameraActions: {
     padding: 18,
