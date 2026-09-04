@@ -28,6 +28,284 @@ const UPLOAD_URL_API =
 const clamp = (value, min, max) =>
   Math.min(max, Math.max(min, value));
 
+// This matches the current right-hand sample overlay box.
+// YOLO will eventually replace these fixed coordinates.
+const DEMO_SAMPLE_REGION = {
+  x: 0.525,
+  y: 0.5,
+  width: 0.38,
+  height: 0.18,
+};
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function rgbToLab({ r, g, b }) {
+  function linearize(value) {
+    const channel = value / 255;
+
+    return channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4;
+  }
+
+  const red = linearize(r);
+  const green = linearize(g);
+  const blue = linearize(b);
+
+  const x =
+    (red * 0.4124564 +
+      green * 0.3575761 +
+      blue * 0.1804375) /
+    0.95047;
+
+  const y =
+    red * 0.2126729 +
+    green * 0.7151522 +
+    blue * 0.072175;
+
+  const z =
+    (red * 0.0193339 +
+      green * 0.119192 +
+      blue * 0.9503041) /
+    1.08883;
+
+  function pivot(value) {
+    return value > 0.008856
+      ? Math.cbrt(value)
+      : 7.787 * value + 16 / 116;
+  }
+
+  const fx = pivot(x);
+  const fy = pivot(y);
+  const fz = pivot(z);
+
+  return {
+    l: 116 * fy - 16,
+    a: 500 * (fx - fy),
+    b: 200 * (fy - fz),
+  };
+}
+
+function mapSampleBoxToPhoto(previewSize, photoSize) {
+  // The photo is displayed with resizeMode="cover".
+  const scale = Math.max(
+    previewSize.width / photoSize.width,
+    previewSize.height / photoSize.height
+  );
+
+  const displayedWidth = photoSize.width * scale;
+  const displayedHeight = photoSize.height * scale;
+
+  const offsetX =
+    (previewSize.width - displayedWidth) / 2;
+
+  const offsetY =
+    (previewSize.height - displayedHeight) / 2;
+
+  // Remove the outer 18% to avoid the sample border.
+  const inset = 0.18;
+
+  const region = {
+    x:
+      DEMO_SAMPLE_REGION.x +
+      DEMO_SAMPLE_REGION.width * inset,
+
+    y:
+      DEMO_SAMPLE_REGION.y +
+      DEMO_SAMPLE_REGION.height * inset,
+
+    width:
+      DEMO_SAMPLE_REGION.width * (1 - inset * 2),
+
+    height:
+      DEMO_SAMPLE_REGION.height * (1 - inset * 2),
+  };
+
+  const left =
+    (region.x * previewSize.width - offsetX) / scale;
+
+  const top =
+    (region.y * previewSize.height - offsetY) / scale;
+
+  const right =
+    ((region.x + region.width) * previewSize.width -
+      offsetX) /
+    scale;
+
+  const bottom =
+    ((region.y + region.height) * previewSize.height -
+      offsetY) /
+    scale;
+
+  const x = clamp(
+    Math.floor(left),
+    0,
+    photoSize.width - 1
+  );
+
+  const y = clamp(
+    Math.floor(top),
+    0,
+    photoSize.height - 1
+  );
+
+  return {
+    x,
+    y,
+
+    width: Math.max(
+      1,
+      clamp(
+        Math.ceil(right),
+        1,
+        photoSize.width
+      ) - x
+    ),
+
+    height: Math.max(
+      1,
+      clamp(
+        Math.ceil(bottom),
+        1,
+        photoSize.height
+      ) - y
+    ),
+  };
+}
+
+async function measureSampleColor(photoUri, previewSize) {
+  if (Platform.OS !== 'web') {
+    throw new Error(
+      'Demo color analysis currently works on web only.'
+    );
+  }
+
+  if (!previewSize.width || !previewSize.height) {
+    throw new Error('Camera preview size is unavailable.');
+  }
+
+  if (typeof createImageBitmap !== 'function') {
+    throw new Error(
+      'This browser cannot decode the captured image.'
+    );
+  }
+
+  const response = await fetch(photoUri);
+
+  if (!response.ok) {
+    throw new Error('Could not read the captured photo.');
+  }
+
+  const blob = await response.blob();
+  const bitmap = await createImageBitmap(blob);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+
+  const context = canvas.getContext('2d', {
+    willReadFrequently: true,
+  });
+
+  if (!context) {
+    bitmap.close?.();
+    throw new Error('Canvas analysis is unavailable.');
+  }
+
+  context.drawImage(bitmap, 0, 0);
+
+  try {
+    const crop = mapSampleBoxToPhoto(
+      previewSize,
+      {
+        width: bitmap.width,
+        height: bitmap.height,
+      }
+    );
+
+    const imageData = context.getImageData(
+      crop.x,
+      crop.y,
+      crop.width,
+      crop.height
+    );
+
+    const red = [];
+    const green = [];
+    const blue = [];
+
+    const pixelCount =
+      imageData.width * imageData.height;
+
+    const stride = Math.max(
+      1,
+      Math.floor(Math.sqrt(pixelCount / 50000))
+    );
+
+    let totalSampled = 0;
+
+    for (let y = 0; y < imageData.height; y += stride) {
+      for (let x = 0; x < imageData.width; x += stride) {
+        totalSampled += 1;
+
+        const index =
+          (y * imageData.width + x) * 4;
+
+        const r = imageData.data[index];
+        const g = imageData.data[index + 1];
+        const b = imageData.data[index + 2];
+        const alpha = imageData.data[index + 3];
+
+        const luminance =
+          0.2126 * r +
+          0.7152 * g +
+          0.0722 * b;
+
+        // Remove transparent, very dark, and glare pixels.
+        if (
+          alpha >= 200 &&
+          luminance > 12 &&
+          luminance < 245
+        ) {
+          red.push(r);
+          green.push(g);
+          blue.push(b);
+        }
+      }
+    }
+
+    if (red.length < 20) {
+      throw new Error(
+        'Not enough usable pixels. Check alignment and lighting.'
+      );
+    }
+
+    const rgb = {
+      r: median(red),
+      g: median(green),
+      b: median(blue),
+    };
+
+    return {
+      rgb,
+      lab: rgbToLab(rgb),
+      usablePixelRatio:
+        red.length / Math.max(totalSampled, 1),
+    };
+  } finally {
+    bitmap.close?.();
+    canvas.width = 1;
+    canvas.height = 1;
+  }
+}
+
 function Card({ title, onPress, active = false }) {
   return (
     <TouchableOpacity
@@ -118,6 +396,10 @@ function CameraPage({ goHome, addToAlbum }) {
 
   const [isUploading, setIsUploading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState('');
+
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState(null);
+  const [analysisError, setAnalysisError] = useState('');
 
   async function takePhoto() {
     if (!cameraRef.current || isTakingPhoto) return;
@@ -236,6 +518,31 @@ function CameraPage({ goHome, addToAlbum }) {
       );
     } finally {
       setIsUploading(false);
+    }
+  }
+
+  async function analyzeSample() {
+    if (!photoUri || isAnalyzing) return;
+
+    try {
+      setIsAnalyzing(true);
+      setAnalysisError('');
+      setAnalysisResult(null);
+
+      const result = await measureSampleColor(
+        photoUri,
+        previewSize
+      );
+
+      setAnalysisResult(result);
+    } catch (error) {
+      console.error(error);
+
+      setAnalysisError(
+        error.message || 'Sample analysis failed.'
+      );
+    } finally {
+      setIsAnalyzing(false);
     }
   }
 
@@ -392,7 +699,11 @@ function CameraPage({ goHome, addToAlbum }) {
           }}
         >
           {photoUri ? (
-            <Image source={{ uri: photoUri }} style={styles.cameraPreview} />
+            <Image
+              source={{ uri: photoUri }}
+              style={styles.cameraPreview}
+              resizeMode="cover"
+            />
           ) : (
             <CameraView ref={cameraRef} style={styles.cameraPreview} facing="back" />
           )}
@@ -472,6 +783,161 @@ function CameraPage({ goHome, addToAlbum }) {
                   <Text style={styles.primaryButtonText}>Add to Album</Text>
                 </TouchableOpacity>
               </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  { backgroundColor: '#7C3AED' },
+                  isAnalyzing && styles.buttonDisabled,
+                ]}
+                onPress={analyzeSample}
+                disabled={isAnalyzing}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {isAnalyzing
+                    ? 'Analyzing...'
+                    : 'Measure Sample Color'}
+                </Text>
+              </TouchableOpacity>
+
+              {analysisError ? (
+                <Text style={styles.uploadError}>
+                  Analysis failed: {analysisError}
+                </Text>
+              ) : null}
+
+              {analysisResult ? (
+                <View
+                  style={{
+                    width: '100%',
+                    maxWidth: 620,
+                    padding: 16,
+                    borderRadius: 18,
+                    borderWidth: 1,
+                    borderColor: theme.line,
+                    backgroundColor: theme.card,
+                    gap: 10,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: theme.ink,
+                      fontSize: 18,
+                      fontWeight: '900',
+                    }}
+                  >
+                    Demo Sample Measurement
+                  </Text>
+
+                  <Text
+                    style={{
+                      color: '#7C3AED',
+                      fontWeight: '800',
+                    }}
+                  >
+                    Fixed sample box · No gray-reference correction
+                  </Text>
+
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <Text style={{ color: theme.muted }}>
+                      Median RGB
+                    </Text>
+
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <View
+                        style={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: 6,
+                          borderWidth: 1,
+                          borderColor: theme.line,
+                          backgroundColor: `rgb(
+              ${Math.round(analysisResult.rgb.r)},
+              ${Math.round(analysisResult.rgb.g)},
+              ${Math.round(analysisResult.rgb.b)}
+            )`,
+                        }}
+                      />
+
+                      <Text
+                        style={{
+                          color: theme.ink,
+                          fontWeight: '900',
+                        }}
+                      >
+                        {Math.round(analysisResult.rgb.r)},{' '}
+                        {Math.round(analysisResult.rgb.g)},{' '}
+                        {Math.round(analysisResult.rgb.b)}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <Text style={{ color: theme.muted }}>
+                      CIELAB
+                    </Text>
+
+                    <Text
+                      style={{
+                        color: theme.ink,
+                        fontWeight: '900',
+                      }}
+                    >
+                      {analysisResult.lab.l.toFixed(1)},{' '}
+                      {analysisResult.lab.a.toFixed(1)},{' '}
+                      {analysisResult.lab.b.toFixed(1)}
+                    </Text>
+                  </View>
+
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <Text style={{ color: theme.muted }}>
+                      Usable pixels
+                    </Text>
+
+                    <Text
+                      style={{
+                        color: theme.ink,
+                        fontWeight: '900',
+                      }}
+                    >
+                      {(analysisResult.usablePixelRatio * 100).toFixed(0)}%
+                    </Text>
+                  </View>
+
+                  <Text
+                    style={{
+                      color: theme.muted,
+                      fontSize: 12,
+                      lineHeight: 18,
+                    }}
+                  >
+                    Prototype measurement only. Concentration
+                    prediction has not been calibrated.
+                  </Text>
+                </View>
+              ) : null}
 
               {uploadMessage ? (
                 <Text
