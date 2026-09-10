@@ -161,8 +161,8 @@ export function decodeDetections(output, width, height, geometry) {
 }
 
 export function sampleRegion(context, box, classId) {
-  // Central 60% of the strip and 70% of the gray reference, on each axis.
-  const inset = classId === 0 ? 0.2 : 0.15;
+  // Central 50% of the strip and 70% of the gray reference, on each axis.
+  const inset = classId === 0 ? 0.25 : 0.15;
   const x = Math.ceil(box.x + box.width * inset);
   const y = Math.ceil(box.y + box.height * inset);
   const width = Math.floor(box.x + box.width * (1 - inset)) - x;

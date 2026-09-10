@@ -1105,7 +1105,7 @@ function CameraPage({ goHome, addToAlbum }) {
                           <Text style={styles.pointColorSecondary}>Lab {lab.l.toFixed(1)}, {lab.a.toFixed(1)}, {lab.b.toFixed(1)}</Text>
                         </View>
                       </View>
-                      <Text style={styles.pointColorSecondary}>{d.color.pixelCount.toLocaleString()} sampled pixels · center {d.classId === 0 ? '60%' : '70%'} of width and height</Text>
+                      <Text style={styles.pointColorSecondary}>{d.color.pixelCount.toLocaleString()} sampled pixels · center {d.classId === 0 ? '50%' : '70%'} of width and height</Text>
                       {d.color.clippedRatio > 0.1 && <Text style={styles.uploadError}>Some pixels have near-clipped channels. Check exposure and glare.</Text>}
                       {estimate && <View style={{ gap: 5, marginTop: 8 }}>
                         <Text style={styles.pointColorTitle}>Closest chart match: {estimate.ppm} ppm</Text>
