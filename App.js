@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { detectStripColors, detectVideoFrame, liveBoxStyle, liveFrameDelay } from './stripDetector';
+import { estimateFerrousPpm, rgbToLab as calibrationRgbToLab } from './ferrousCalibration';
 
 const theme = {
   bg: '#F7FAFC',
@@ -31,49 +32,34 @@ const clamp = (value, min, max) =>
   Math.min(max, Math.max(min, value));
 
 function rgbToLab({ r, g, b }) {
-  function linearize(value) {
-    const channel = value / 255;
+  const [l, a, labB] = calibrationRgbToLab([r, g, b]);
+  return { l, a, b: labB };
+}
 
-    return channel <= 0.04045
-      ? channel / 12.92
-      : ((channel + 0.055) / 1.055) ** 2.4;
-  }
-
-  const red = linearize(r);
-  const green = linearize(g);
-  const blue = linearize(b);
-
-  const x =
-    (red * 0.4124564 +
-      green * 0.3575761 +
-      blue * 0.1804375) /
-    0.95047;
-
-  const y =
-    red * 0.2126729 +
-    green * 0.7151522 +
-    blue * 0.072175;
-
-  const z =
-    (red * 0.0193339 +
-      green * 0.119192 +
-      blue * 0.9503041) /
-    1.08883;
-
-  function pivot(value) {
-    return value > 0.008856
-      ? Math.cbrt(value)
-      : 7.787 * value + 16 / 116;
-  }
-
-  const fx = pivot(x);
-  const fy = pivot(y);
-  const fz = pivot(z);
-
+// Use one unambiguous gray reference from the same photo. With missing or
+// multiple references, report an explicitly uncorrected chart match.
+function addFerrousCalibration(result) {
+  const validColor = d => !d.color?.error && d.color?.rgb &&
+    ['r', 'g', 'b'].every(k => Number.isFinite(d.color.rgb[k]) &&
+      d.color.rgb[k] >= 0 && d.color.rgb[k] <= 255);
+  const grays = result.detections.filter(d => d.classId === 1 && validColor(d));
+  const gray = grays.length === 1 ? grays[0].color.rgb : null;
+  const calibrationNote = gray
+    ? 'Gray correction applied using the digital reference #9A9A9A.'
+    : grays.length === 0
+      ? 'No usable gray reference: matches use uncorrected colors.'
+      : 'Multiple gray references: matches use uncorrected colors. Use one reference card per photo.';
   return {
-    l: 116 * fy - 16,
-    a: 500 * (fx - fy),
-    b: 200 * (fy - fz),
+    ...result,
+    calibrationNote,
+    detections: result.detections.map(d => ({
+      ...d,
+      calibration: d.classId === 0 && validColor(d)
+        ? estimateFerrousPpm([d.color.rgb.r, d.color.rgb.g, d.color.rgb.b], {
+            grayRgb: gray ? [gray.r, gray.g, gray.b] : null,
+          })
+        : null,
+    })),
   };
 }
 
@@ -622,7 +608,7 @@ function CameraPage({ goHome, addToAlbum }) {
       setAnalysisError('');
       setAnalysisResult(null);
       const result = await detectStripColors(photoUri);
-      if (id === analysisIdRef.current) setAnalysisResult(result);
+      if (id === analysisIdRef.current) setAnalysisResult(addFerrousCalibration(result));
     } catch (error) {
       if (id === analysisIdRef.current) setAnalysisError(error.message || 'Photo analysis failed.');
     } finally {
@@ -1101,10 +1087,12 @@ function CameraPage({ goHome, addToAlbum }) {
 
               {analysisResult && <View style={{ width: '100%', maxWidth: 620, gap: 12 }}>
                 <Text style={styles.pointColorTitle}>Detected Colors</Text>
-                <Text style={styles.pointColorSecondary}>Median RGB and CIELAB (sRGB/D65). Gray correction and ppm prediction are not yet calibrated.</Text>
+                <Text style={styles.pointColorSecondary}>Chart matching prototype. Concentration accuracy has not yet been validated with real samples.</Text>
+                <Text style={styles.pointColorSecondary}>{analysisResult.calibrationNote}</Text>
                 {analysisResult.warnings.map(message => <Text key={message} style={styles.uploadError}>{message}</Text>)}
                 {analysisResult.detections.map((d, index) => {
                   const lab = d.color.rgb ? rgbToLab(d.color.rgb) : null;
+                  const estimate = d.calibration;
                   return <View key={index} style={[styles.pointColorCard, { width: '100%' }]}>
                     <Text style={styles.pointColorTitle}>{d.classId === 0 ? 'Strip' : 'Gray Reference'} {index + 1}</Text>
                     <Text style={styles.pointColorSecondary}>Detection confidence: {(d.score * 100).toFixed(1)}%</Text>
@@ -1119,6 +1107,16 @@ function CameraPage({ goHome, addToAlbum }) {
                       </View>
                       <Text style={styles.pointColorSecondary}>{d.color.pixelCount.toLocaleString()} sampled pixels · center {d.classId === 0 ? '60%' : '70%'} of width and height</Text>
                       {d.color.clippedRatio > 0.1 && <Text style={styles.uploadError}>Some pixels have near-clipped channels. Check exposure and glare.</Text>}
+                      {estimate && <View style={{ gap: 5, marginTop: 8 }}>
+                        <Text style={styles.pointColorTitle}>Closest chart match: {estimate.ppm} ppm</Text>
+                        <Text style={styles.pointColorSecondary}>
+                          {estimate.grayCorrectionApplied ? 'Gray-corrected' : 'Uncorrected'} Lab: {estimate.lab.map(v => v.toFixed(1)).join(', ')}
+                        </Text>
+                        <Text style={styles.pointColorSecondary}>Color difference (ΔE00): {estimate.deltaE.toFixed(2)} · smaller means closer to the chart</Text>
+                        <Text style={styles.pointColorSecondary}>Other close matches: {estimate.candidates.slice(1).map(c => `${c.ppm} ppm (ΔE ${c.deltaE.toFixed(2)})`).join(' · ')}</Text>
+                        <Text style={styles.pointColorSecondary}>Approximate chart comparison; this is not the lab concentration. Unrelated colors can still receive a nearest match.</Text>
+                        {estimate.atChartEndpoint && <Text style={styles.uploadError}>Match is at the end of the chart. The true concentration may be outside its range.</Text>}
+                      </View>}
                     </>}
                   </View>;
                 })}
