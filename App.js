@@ -1,7 +1,6 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
 import { useEffect, useRef, useState } from 'react';
-import { detectStripColors } from './stripDetector';
 import {
   Image,
   Platform,
@@ -14,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { detectStripColors, detectVideoFrame, liveBoxStyle, liveFrameDelay } from './stripDetector';
 
 const theme = {
   bg: '#F7FAFC',
@@ -335,6 +335,12 @@ const TEST_UIS = {
 
 function CameraPage({ goHome, addToAlbum }) {
   const cameraRef = useRef(null);
+  const previewRef = useRef(null);
+  const liveGenerationRef = useRef(0);
+  const [liveEnabled, setLiveEnabled] = useState(false);
+  const [liveResult, setLiveResult] = useState(null);
+  const [liveMessage, setLiveMessage] = useState('');
+  const [pageVisible, setPageVisible] = useState(true);
   const pointMeasurementIdRef = useRef(0);
   const analysisIdRef = useRef(0);
   const photoLoadIdRef = useRef(0);
@@ -372,8 +378,69 @@ function CameraPage({ goHome, addToAlbum }) {
   const [pointColorError, setPointColorError] =
     useState('');
 
+  // Live inference never queues camera frames. Cleanup invalidates any result
+  // still in flight; a worker run itself is allowed to finish safely.
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const update = () => setPageVisible(!document.hidden);
+    update();
+    document.addEventListener('visibilitychange', update);
+    return () => document.removeEventListener('visibilitychange', update);
+  }, []);
+
+  function stopLiveDetection() {
+    liveGenerationRef.current += 1;
+    setLiveEnabled(false);
+    setLiveResult(null);
+    setLiveMessage('');
+  }
+
+  useEffect(() => {
+    const generation = ++liveGenerationRef.current;
+    let cancelled = false, timer, expiry;
+    const current = () => !cancelled && generation === liveGenerationRef.current && !document.hidden;
+    setLiveResult(null);
+    const active = Platform.OS === 'web' && liveEnabled && permission?.granted &&
+      !photoUri && !isTakingPhoto && !isAnalyzing && selectedTest === 'ferrous' && pageVisible;
+    if (!active) return;
+    setLiveMessage('Starting live detection… First use loads the model.');
+    async function tick() {
+      if (!current()) return;
+      try {
+        const video = previewRef.current?.querySelector?.('video');
+        const result = await detectVideoFrame(video, current);
+        if (!current()) return;
+        if (!result) {
+          setLiveResult(null);
+          setLiveMessage('Waiting for camera or detector…');
+          timer = setTimeout(tick, 500);
+          return;
+        }
+        const delay = liveFrameDelay(result.elapsedMs);
+        setLiveResult(result);
+        setLiveMessage(`Frame processing: ${Math.round(result.elapsedMs)} ms · about ${(1000 / (result.elapsedMs + delay)).toFixed(1)} checks/sec`);
+        clearTimeout(expiry);
+        // Never leave an old box indefinitely when camera frames stop arriving.
+        expiry = setTimeout(() => { if (current()) setLiveResult(null); }, 2000);
+        timer = setTimeout(tick, delay);
+      } catch (error) {
+        if (!current()) return;
+        setLiveResult(null);
+        setLiveMessage(`Live detection stopped: ${error.message || 'Unknown error'}`);
+        setLiveEnabled(false);
+      }
+    }
+    tick();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      clearTimeout(expiry);
+    };
+  }, [liveEnabled, permission?.granted, photoUri, isTakingPhoto, isAnalyzing, selectedTest, pageVisible]);
+
   async function takePhoto() {
     if (!cameraRef.current || isTakingPhoto) return;
+    stopLiveDetection();
 
     try {
       setIsTakingPhoto(true);
@@ -528,6 +595,7 @@ function CameraPage({ goHome, addToAlbum }) {
       reader.onerror = () => { if (id === photoLoadIdRef.current) setAnalysisError('Could not open the selected photo.'); };
       reader.onload = () => {
         if (id !== photoLoadIdRef.current) return;
+        stopLiveDetection();
         clearAnalysis();
         pointMeasurementIdRef.current += 1;
         setPhotoUri(String(reader.result));
@@ -745,7 +813,7 @@ function CameraPage({ goHome, addToAlbum }) {
                 },
               ]}
               disabled={isAnalyzing || isUploading}
-              onPress={() => { setSelectedTest(key); clearAnalysis(); }}
+              onPress={() => { stopLiveDetection(); setSelectedTest(key); clearAnalysis(); }}
             >
               <Text
                 style={[
@@ -781,6 +849,7 @@ function CameraPage({ goHome, addToAlbum }) {
         <TouchableOpacity
           activeOpacity={1}
           style={styles.cameraBox}
+          ref={previewRef}
           onPress={handleCameraPress}
           onLayout={(event) => {
             const { width, height } = event.nativeEvent.layout;
@@ -807,15 +876,42 @@ function CameraPage({ goHome, addToAlbum }) {
           )}
 
           <View pointerEvents="none" style={styles.alignmentOverlay}>
-            {!photoUri && permission?.granted && <>
-              <OverlayBox label={currentUI.boxes.top} color={currentUI.color} style={styles.ironScaleBox} />
-              <OverlayBox label={currentUI.boxes.left} color={currentUI.color} style={styles.greyReferenceBox} labelStyle={styles.labelBelow} />
-              <OverlayBox label={currentUI.boxes.right} color={currentUI.color} style={styles.sampleFilmBox} labelStyle={styles.labelBelow} />
-            </>}
+            {/* Fixed camera guides — uncomment to restore.
+              {!photoUri && permission?.granted && <>
+                <OverlayBox
+                  label={currentUI.boxes.top}
+                  color={currentUI.color}
+                  style={styles.ironScaleBox}
+                />
+                <OverlayBox
+                  label={currentUI.boxes.left}
+                  color={currentUI.color}
+                  style={styles.greyReferenceBox}
+                  labelStyle={styles.labelBelow}
+                />
+                <OverlayBox
+                  label={currentUI.boxes.right}
+                  color={currentUI.color}
+                  style={styles.sampleFilmBox}
+                  labelStyle={styles.labelBelow}
+                />
+              </>}
+              */}
+            {!photoUri && liveEnabled && pageVisible && liveResult && liveResult.detections.map((d, index) => {
+              const boxStyle = liveBoxStyle(d.box, liveResult.photoSize, previewSize, liveResult.mirrored);
+              if (!boxStyle) return null;
+              const color = d.classId === 0 ? '#2563EB' : '#0891B2';
+              return <OverlayBox key={`live-${index}`}
+                label={`${d.classId === 0 ? 'Strip' : 'Gray'} · ${Math.round(d.score * 100)}%`}
+                color={color} style={[boxStyle, { backgroundColor: 'transparent' }]}
+                labelStyle={{ width: 130, right: undefined, textAlign: 'left', top: 0, fontSize: 11, backgroundColor: '#FFFFFFDD' }} />;
+            })}
             {photoUri && analysisResult && analysisResult.detections.map((d, index) => {
               const t = getPhotoTransform(previewSize, analysisResult.photoSize);
-              const toStyle = box => ({ left: box.x * t.scale + t.offsetX, top: box.y * t.scale + t.offsetY,
-                width: box.width * t.scale, height: box.height * t.scale });
+              const toStyle = box => ({
+                left: box.x * t.scale + t.offsetX, top: box.y * t.scale + t.offsetY,
+                width: box.width * t.scale, height: box.height * t.scale
+              });
               const color = d.classId === 0 ? '#2563EB' : '#0891B2';
               return <View key={index} style={StyleSheet.absoluteFill}>
                 <OverlayBox label={`${d.classId === 0 ? 'Strip' : 'Gray'} ${index + 1} · ${Math.round(d.score * 100)}%`}
@@ -837,6 +933,23 @@ function CameraPage({ goHome, addToAlbum }) {
             )}
           </View>
         </TouchableOpacity>
+
+        {Platform.OS === 'web' && !photoUri && selectedTest === 'ferrous' && <View style={{ marginHorizontal: 18, gap: 8 }}>
+          <TouchableOpacity
+            style={[styles.secondaryButton, (!permission?.granted || isTakingPhoto) && styles.buttonDisabled]}
+            disabled={!permission?.granted || isTakingPhoto}
+            onPress={() => {
+              if (liveEnabled) stopLiveDetection();
+              else { setLiveResult(null); setLiveMessage('Starting live detection…'); setLiveEnabled(true); }
+            }}>
+            <Text style={styles.secondaryButtonText}>{liveEnabled ? 'Stop Live Detection' : 'Start Live Detection'}</Text>
+          </TouchableOpacity>
+          <Text style={styles.pointColorSecondary}>{!permission?.granted ? 'Enable the camera to use live detection.' : liveMessage || 'Optional live outlines. Color is measured after capture.'}</Text>
+          {liveEnabled && <Text style={styles.pointColorSecondary}>Latest sampled frame; hold the camera steady. Updates may be slower on phones.</Text>}
+          {liveEnabled && liveResult && <Text style={styles.pointColorSecondary}>
+            {liveResult.detections.filter(d => d.classId === 0).length} strip(s) · {liveResult.detections.filter(d => d.classId === 1).length} gray reference(s)
+          </Text>}
+        </View>}
 
         <Text style={styles.cameraHint}>
           {photoUri
