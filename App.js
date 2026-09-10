@@ -9,6 +9,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -571,6 +572,7 @@ function CameraPage({ goHome, addToAlbum }) {
   });
 
   const [selectedTest, setSelectedTest] = useState('ferrous');
+  const [concentration, setConcentration] = useState('');
   const currentUI = TEST_UIS[selectedTest];
 
   const [isUploading, setIsUploading] = useState(false);
@@ -647,6 +649,13 @@ function CameraPage({ goHome, addToAlbum }) {
   async function uploadPhoto() {
     if (!photoUri || isUploading) return;
 
+    if (!concentration.trim()) {
+      setUploadMessage(
+        'Upload failed: Enter the lab concentration first.'
+      );
+      return;
+    }
+
     try {
       setIsUploading(true);
       setUploadMessage('Preparing upload...');
@@ -670,6 +679,7 @@ function CameraPage({ goHome, addToAlbum }) {
         body: JSON.stringify({
           contentType,
           testType: selectedTest,
+          concentration: concentration.trim(),
         }),
       });
 
@@ -934,6 +944,25 @@ function CameraPage({ goHome, addToAlbum }) {
               </Text>
             </TouchableOpacity>
           ))}
+        </View>
+
+        <View style={styles.concentrationSection}>
+          <Text style={styles.concentrationLabel}>
+            Lab concentration
+          </Text>
+
+          <View style={styles.concentrationInputRow}>
+            <TextInput
+              style={styles.concentrationInput}
+              value={concentration}
+              onChangeText={setConcentration}
+              placeholder="e.g. 600"
+              placeholderTextColor={theme.muted}
+              keyboardType="decimal-pad"
+            />
+
+            <Text style={styles.concentrationUnit}>ppm</Text>
+          </View>
         </View>
 
         <TouchableOpacity
@@ -1702,5 +1731,39 @@ const styles = StyleSheet.create({
   },
   uploadError: {
     color: '#B91C1C',
-  }
+  },
+  concentrationSection: {
+    marginHorizontal: 18,
+    marginTop: 12,
+  },
+
+  concentrationLabel: {
+    color: theme.ink,
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+
+  concentrationInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.card,
+    borderWidth: 1,
+    borderColor: theme.line,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+  },
+
+  concentrationInput: {
+    flex: 1,
+    paddingVertical: 12,
+    color: theme.ink,
+    fontSize: 16,
+  },
+
+  concentrationUnit: {
+    color: theme.muted,
+    fontSize: 15,
+    fontWeight: '800',
+  },
 });
