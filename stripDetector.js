@@ -170,13 +170,17 @@ export function sampleRegion(context, box, classId) {
   if (width < 1 || height < 1) return { error: 'Region too small to measure.' };
   const { data } = context.getImageData(x, y, width, height);
   const channels = [[], [], []];
+  const sums = [0, 0, 0];
   let clipped = 0;
   const stride = Math.max(1, Math.ceil(Math.sqrt(width * height / 50000)));
   for (let row = 0; row < height; row += stride) {
     for (let col = 0; col < width; col += stride) {
       const i = (row * width + col) * 4;
       if (data[i + 3] < 200) continue;
-      for (let c = 0; c < 3; c++) channels[c].push(data[i + c]);
+      for (let c = 0; c < 3; c++) {
+        channels[c].push(data[i + c]);
+        sums[c] += data[i + c];
+      }
       if (Math.min(data[i], data[i + 1], data[i + 2]) <= 2 || Math.max(data[i], data[i + 1], data[i + 2]) >= 253) clipped++;
     }
   }
@@ -188,8 +192,13 @@ export function sampleRegion(context, box, classId) {
     const mid = Math.floor(values.length / 2);
     return values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
   });
+  const medianRgb = { r: medians[0], g: medians[1], b: medians[2] };
+  const meanRgb = { r: sums[0] / count, g: sums[1] / count, b: sums[2] / count };
   return {
-    rgb: { r: medians[0], g: medians[1], b: medians[2] },
+    // Preserve median-based calibration. Both statistics use identical pixels.
+    rgb: medianRgb,
+    medianRgb,
+    meanRgb,
     sampleBox: { x, y, width, height }, pixelCount: count, clippedRatio: clipped / count
   };
 }

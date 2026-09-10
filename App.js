@@ -13,8 +13,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { rgbToLab as calibrationRgbToLab, estimateFerrousPpm } from './ferrousCalibration';
 import { detectStripColors, detectVideoFrame, liveBoxStyle, liveFrameDelay } from './stripDetector';
-import { estimateFerrousPpm, rgbToLab as calibrationRgbToLab } from './ferrousCalibration';
 
 const theme = {
   bg: '#F7FAFC',
@@ -56,8 +56,8 @@ function addFerrousCalibration(result) {
       ...d,
       calibration: d.classId === 0 && validColor(d)
         ? estimateFerrousPpm([d.color.rgb.r, d.color.rgb.g, d.color.rgb.b], {
-            grayRgb: gray ? [gray.r, gray.g, gray.b] : null,
-          })
+          grayRgb: gray ? [gray.r, gray.g, gray.b] : null,
+        })
         : null,
     })),
   };
@@ -1091,20 +1091,28 @@ function CameraPage({ goHome, addToAlbum }) {
                 <Text style={styles.pointColorSecondary}>{analysisResult.calibrationNote}</Text>
                 {analysisResult.warnings.map(message => <Text key={message} style={styles.uploadError}>{message}</Text>)}
                 {analysisResult.detections.map((d, index) => {
-                  const lab = d.color.rgb ? rgbToLab(d.color.rgb) : null;
                   const estimate = d.calibration;
                   return <View key={index} style={[styles.pointColorCard, { width: '100%' }]}>
                     <Text style={styles.pointColorTitle}>{d.classId === 0 ? 'Strip' : 'Gray Reference'} {index + 1}</Text>
                     <Text style={styles.pointColorSecondary}>Detection confidence: {(d.score * 100).toFixed(1)}%</Text>
                     {d.color.error ? <Text style={styles.uploadError}>{d.color.error}</Text> : <>
-                      <View style={styles.pointColorContent}>
-                        <View style={[styles.pointColorSwatch, { backgroundColor: rgbToHex(d.color.rgb) }]} />
-                        <View style={styles.pointColorValues}>
-                          <Text style={styles.pointColorValue}>RGB {Math.round(d.color.rgb.r)}, {Math.round(d.color.rgb.g)}, {Math.round(d.color.rgb.b)}</Text>
-                          <Text style={styles.pointColorValue}>HEX {rgbToHex(d.color.rgb)}</Text>
-                          <Text style={styles.pointColorSecondary}>Lab {lab.l.toFixed(1)}, {lab.a.toFixed(1)}, {lab.b.toFixed(1)}</Text>
-                        </View>
-                      </View>
+                      <Text style={styles.pointColorSecondary}>Raw colors from the same sampled pixels. Ppm matching uses the median; the manual point picker uses a mean from a smaller area.</Text>
+                      {[
+                        { label: 'Median', rgb: d.color.medianRgb || d.color.rgb },
+                        { label: 'Mean (average)', rgb: d.color.meanRgb },
+                      ].map(({ label, rgb }) => {
+                        if (!rgb) return <Text key={label} style={styles.uploadError}>Mean unavailable. Update stripDetector.js and analyze the photo again.</Text>;
+                        const colorLab = rgbToLab(rgb);
+                        return <View key={label} style={[styles.pointColorContent, { marginTop: 8 }]}>
+                          <View style={[styles.pointColorSwatch, { backgroundColor: rgbToHex(rgb) }]} />
+                          <View style={styles.pointColorValues}>
+                            <Text style={styles.pointColorTitle}>{label}</Text>
+                            <Text style={styles.pointColorValue}>RGB {rgb.r.toFixed(1)}, {rgb.g.toFixed(1)}, {rgb.b.toFixed(1)}</Text>
+                            <Text style={styles.pointColorValue}>HEX {rgbToHex(rgb)}</Text>
+                            <Text style={styles.pointColorSecondary}>Lab {colorLab.l.toFixed(1)}, {colorLab.a.toFixed(1)}, {colorLab.b.toFixed(1)}</Text>
+                          </View>
+                        </View>;
+                      })}
                       <Text style={styles.pointColorSecondary}>{d.color.pixelCount.toLocaleString()} sampled pixels · center {d.classId === 0 ? '50%' : '70%'} of width and height</Text>
                       {d.color.clippedRatio > 0.1 && <Text style={styles.uploadError}>Some pixels have near-clipped channels. Check exposure and glare.</Text>}
                       {estimate && <View style={{ gap: 5, marginTop: 8 }}>
