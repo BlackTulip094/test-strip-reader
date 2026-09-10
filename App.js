@@ -1,6 +1,7 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { detectStripColors } from './stripDetector';
 import {
   Image,
   Platform,
@@ -28,24 +29,6 @@ const UPLOAD_URL_API =
 
 const clamp = (value, min, max) =>
   Math.min(max, Math.max(min, value));
-
-// This matches the current right-hand sample overlay box.
-// YOLO will eventually replace these fixed coordinates.
-const DEMO_SAMPLE_REGION = {
-  x: 0.525,
-  y: 0.5,
-  width: 0.38,
-  height: 0.18,
-};
-
-function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-
-  return sorted.length % 2
-    ? sorted[middle]
-    : (sorted[middle - 1] + sorted[middle]) / 2;
-}
 
 function rgbToLab({ r, g, b }) {
   function linearize(value) {
@@ -104,8 +87,8 @@ function rgbToHex({ r, g, b }) {
     .join('')}`.toUpperCase();
 }
 
-function getCoverTransform(previewSize, photoSize) {
-  const scale = Math.max(
+function getPhotoTransform(previewSize, photoSize) {
+  const scale = Math.min(
     previewSize.width / photoSize.width,
     previewSize.height / photoSize.height
   );
@@ -172,8 +155,13 @@ async function measurePointColor(
     };
 
     const { scale, offsetX, offsetY } =
-      getCoverTransform(previewSize, photoSize);
+      getPhotoTransform(previewSize, photoSize);
 
+    const rawX = (point.x - offsetX) / scale;
+    const rawY = (point.y - offsetY) / scale;
+    if (rawX < 0 || rawY < 0 || rawX >= photoSize.width || rawY >= photoSize.height) {
+      throw new Error('Tap inside the photo, away from the empty margins.');
+    }
     const centerX = clamp(
       (point.x - offsetX) / scale,
       0,
@@ -272,219 +260,6 @@ async function measurePointColor(
   }
 }
 
-function mapSampleBoxToPhoto(previewSize, photoSize) {
-  // The photo is displayed with resizeMode="cover".
-  const scale = Math.max(
-    previewSize.width / photoSize.width,
-    previewSize.height / photoSize.height
-  );
-
-  const displayedWidth = photoSize.width * scale;
-  const displayedHeight = photoSize.height * scale;
-
-  const offsetX =
-    (previewSize.width - displayedWidth) / 2;
-
-  const offsetY =
-    (previewSize.height - displayedHeight) / 2;
-
-  // Remove the outer 18% to avoid the sample border.
-  const inset = 0.18;
-
-  const region = {
-    x:
-      DEMO_SAMPLE_REGION.x +
-      DEMO_SAMPLE_REGION.width * inset,
-
-    y:
-      DEMO_SAMPLE_REGION.y +
-      DEMO_SAMPLE_REGION.height * inset,
-
-    width:
-      DEMO_SAMPLE_REGION.width * (1 - inset * 2),
-
-    height:
-      DEMO_SAMPLE_REGION.height * (1 - inset * 2),
-  };
-
-  const left =
-    (region.x * previewSize.width - offsetX) / scale;
-
-  const top =
-    (region.y * previewSize.height - offsetY) / scale;
-
-  const right =
-    ((region.x + region.width) * previewSize.width -
-      offsetX) /
-    scale;
-
-  const bottom =
-    ((region.y + region.height) * previewSize.height -
-      offsetY) /
-    scale;
-
-  const x = clamp(
-    Math.floor(left),
-    0,
-    photoSize.width - 1
-  );
-
-  const y = clamp(
-    Math.floor(top),
-    0,
-    photoSize.height - 1
-  );
-
-  return {
-    x,
-    y,
-
-    width: Math.max(
-      1,
-      clamp(
-        Math.ceil(right),
-        1,
-        photoSize.width
-      ) - x
-    ),
-
-    height: Math.max(
-      1,
-      clamp(
-        Math.ceil(bottom),
-        1,
-        photoSize.height
-      ) - y
-    ),
-  };
-}
-
-async function measureSampleColor(photoUri, previewSize) {
-  if (Platform.OS !== 'web') {
-    throw new Error(
-      'Demo color analysis currently works on web only.'
-    );
-  }
-
-  if (!previewSize.width || !previewSize.height) {
-    throw new Error('Camera preview size is unavailable.');
-  }
-
-  if (typeof createImageBitmap !== 'function') {
-    throw new Error(
-      'This browser cannot decode the captured image.'
-    );
-  }
-
-  const response = await fetch(photoUri);
-
-  if (!response.ok) {
-    throw new Error('Could not read the captured photo.');
-  }
-
-  const blob = await response.blob();
-  const bitmap = await createImageBitmap(blob);
-
-  const canvas = document.createElement('canvas');
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-
-  const context = canvas.getContext('2d', {
-    willReadFrequently: true,
-  });
-
-  if (!context) {
-    bitmap.close?.();
-    throw new Error('Canvas analysis is unavailable.');
-  }
-
-  context.drawImage(bitmap, 0, 0);
-
-  try {
-    const crop = mapSampleBoxToPhoto(
-      previewSize,
-      {
-        width: bitmap.width,
-        height: bitmap.height,
-      }
-    );
-
-    const imageData = context.getImageData(
-      crop.x,
-      crop.y,
-      crop.width,
-      crop.height
-    );
-
-    const red = [];
-    const green = [];
-    const blue = [];
-
-    const pixelCount =
-      imageData.width * imageData.height;
-
-    const stride = Math.max(
-      1,
-      Math.floor(Math.sqrt(pixelCount / 50000))
-    );
-
-    let totalSampled = 0;
-
-    for (let y = 0; y < imageData.height; y += stride) {
-      for (let x = 0; x < imageData.width; x += stride) {
-        totalSampled += 1;
-
-        const index =
-          (y * imageData.width + x) * 4;
-
-        const r = imageData.data[index];
-        const g = imageData.data[index + 1];
-        const b = imageData.data[index + 2];
-        const alpha = imageData.data[index + 3];
-
-        const luminance =
-          0.2126 * r +
-          0.7152 * g +
-          0.0722 * b;
-
-        // Remove transparent, very dark, and glare pixels.
-        if (
-          alpha >= 200 &&
-          luminance > 12 &&
-          luminance < 245
-        ) {
-          red.push(r);
-          green.push(g);
-          blue.push(b);
-        }
-      }
-    }
-
-    if (red.length < 20) {
-      throw new Error(
-        'Not enough usable pixels. Check alignment and lighting.'
-      );
-    }
-
-    const rgb = {
-      r: median(red),
-      g: median(green),
-      b: median(blue),
-    };
-
-    return {
-      rgb,
-      lab: rgbToLab(rgb),
-      usablePixelRatio:
-        red.length / Math.max(totalSampled, 1),
-    };
-  } finally {
-    bitmap.close?.();
-    canvas.width = 1;
-    canvas.height = 1;
-  }
-}
-
 function Card({ title, onPress, active = false }) {
   return (
     <TouchableOpacity
@@ -561,6 +336,13 @@ const TEST_UIS = {
 function CameraPage({ goHome, addToAlbum }) {
   const cameraRef = useRef(null);
   const pointMeasurementIdRef = useRef(0);
+  const analysisIdRef = useRef(0);
+  const photoLoadIdRef = useRef(0);
+  useEffect(() => () => {
+    analysisIdRef.current += 1;
+    pointMeasurementIdRef.current += 1;
+    photoLoadIdRef.current += 1;
+  }, []);
   const [permission, requestPermission] = useCameraPermissions();
   const [photoUri, setPhotoUri] = useState(null);
   const [isTakingPhoto, setIsTakingPhoto] = useState(false);
@@ -624,7 +406,8 @@ function CameraPage({ goHome, addToAlbum }) {
       if (Platform.OS === 'web') {
         const link = document.createElement('a');
         link.href = photoUri;
-        link.download = `test-strip-photo-${Date.now()}.jpg`;
+        const extension = photoUri.startsWith('data:image/png') ? 'png' : photoUri.startsWith('data:image/webp') ? 'webp' : 'jpg';
+        link.download = `test-strip-photo-${Date.now()}.${extension}`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -725,28 +508,57 @@ function CameraPage({ goHome, addToAlbum }) {
     }
   }
 
+  function clearAnalysis() {
+    analysisIdRef.current += 1;
+    setIsAnalyzing(false);
+    setAnalysisResult(null);
+    setAnalysisError('');
+  }
+
+  function choosePhoto() {
+    if (Platform.OS !== 'web' || isAnalyzing || isUploading || isTakingPhoto) return;
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.accept = 'image/jpeg,image/png,image/webp';
+    picker.onchange = () => {
+      const file = picker.files?.[0];
+      if (!file) return;
+      const id = ++photoLoadIdRef.current;
+      const reader = new FileReader();
+      reader.onerror = () => { if (id === photoLoadIdRef.current) setAnalysisError('Could not open the selected photo.'); };
+      reader.onload = () => {
+        if (id !== photoLoadIdRef.current) return;
+        clearAnalysis();
+        pointMeasurementIdRef.current += 1;
+        setPhotoUri(String(reader.result));
+        setMarker(null);
+        setPointColor(null);
+        setPointColorError('');
+        setIsMeasuringPoint(false);
+        setUploadMessage('');
+      };
+      reader.readAsDataURL(file);
+    };
+    picker.click();
+  }
+
   async function analyzeSample() {
     if (!photoUri || isAnalyzing) return;
-
+    if (Platform.OS !== 'web' || selectedTest !== 'ferrous') {
+      setAnalysisError('AI detection is currently available for Ferrous photos in the web app.');
+      return;
+    }
+    const id = ++analysisIdRef.current;
     try {
       setIsAnalyzing(true);
       setAnalysisError('');
       setAnalysisResult(null);
-
-      const result = await measureSampleColor(
-        photoUri,
-        previewSize
-      );
-
-      setAnalysisResult(result);
+      const result = await detectStripColors(photoUri);
+      if (id === analysisIdRef.current) setAnalysisResult(result);
     } catch (error) {
-      console.error(error);
-
-      setAnalysisError(
-        error.message || 'Sample analysis failed.'
-      );
+      if (id === analysisIdRef.current) setAnalysisError(error.message || 'Photo analysis failed.');
     } finally {
-      setIsAnalyzing(false);
+      if (id === analysisIdRef.current) setIsAnalyzing(false);
     }
   }
 
@@ -869,7 +681,7 @@ function CameraPage({ goHome, addToAlbum }) {
     }
   }
 
-  if (!permission) {
+  if (!permission && Platform.OS !== 'web') {
     return (
       <SafeAreaView style={styles.screenCentered}>
         <Text style={styles.subtitle}>Checking camera permission...</Text>
@@ -877,7 +689,7 @@ function CameraPage({ goHome, addToAlbum }) {
     );
   }
 
-  if (!permission.granted) {
+  if (!permission?.granted && Platform.OS !== 'web') {
     return (
       <SafeAreaView style={styles.screenCentered}>
         <Text style={styles.titleSmall}>Camera permission needed</Text>
@@ -932,7 +744,8 @@ function CameraPage({ goHome, addToAlbum }) {
                   backgroundColor: '#FFFFFF',
                 },
               ]}
-              onPress={() => setSelectedTest(key)}
+              disabled={isAnalyzing || isUploading}
+              onPress={() => { setSelectedTest(key); clearAnalysis(); }}
             >
               <Text
                 style={[
@@ -978,32 +791,39 @@ function CameraPage({ goHome, addToAlbum }) {
             <Image
               source={{ uri: photoUri }}
               style={styles.cameraPreview}
-              resizeMode="cover"
+              resizeMode="contain"
             />
           ) : (
-            <CameraView ref={cameraRef} style={styles.cameraPreview} facing="back" />
+            permission?.granted ? (
+              <CameraView ref={cameraRef} style={styles.cameraPreview} facing="back" />
+            ) : (
+              <View style={[styles.cameraPreview, { alignItems: 'center', justifyContent: 'center' }]}>
+                <TouchableOpacity style={styles.primaryButton} onPress={requestPermission}>
+                  <Text style={styles.primaryButtonText}>Enable Camera</Text>
+                </TouchableOpacity>
+                <Text style={styles.cameraHint}>Or choose a saved photo below.</Text>
+              </View>
+            )
           )}
 
           <View pointerEvents="none" style={styles.alignmentOverlay}>
-            <OverlayBox
-              label={currentUI.boxes.top}
-              color={currentUI.color}
-              style={styles.ironScaleBox}
-            />
-
-            <OverlayBox
-              label={currentUI.boxes.left}
-              color={currentUI.color}
-              style={styles.greyReferenceBox}
-              labelStyle={styles.labelBelow}
-            />
-
-            <OverlayBox
-              label={currentUI.boxes.right}
-              color={currentUI.color}
-              style={styles.sampleFilmBox}
-              labelStyle={styles.labelBelow}
-            />
+            {!photoUri && permission?.granted && <>
+              <OverlayBox label={currentUI.boxes.top} color={currentUI.color} style={styles.ironScaleBox} />
+              <OverlayBox label={currentUI.boxes.left} color={currentUI.color} style={styles.greyReferenceBox} labelStyle={styles.labelBelow} />
+              <OverlayBox label={currentUI.boxes.right} color={currentUI.color} style={styles.sampleFilmBox} labelStyle={styles.labelBelow} />
+            </>}
+            {photoUri && analysisResult && analysisResult.detections.map((d, index) => {
+              const t = getPhotoTransform(previewSize, analysisResult.photoSize);
+              const toStyle = box => ({ left: box.x * t.scale + t.offsetX, top: box.y * t.scale + t.offsetY,
+                width: box.width * t.scale, height: box.height * t.scale });
+              const color = d.classId === 0 ? '#2563EB' : '#0891B2';
+              return <View key={index} style={StyleSheet.absoluteFill}>
+                <OverlayBox label={`${d.classId === 0 ? 'Strip' : 'Gray'} ${index + 1} · ${Math.round(d.score * 100)}%`}
+                  color={color} style={[toStyle(d.box), { backgroundColor: 'transparent' }]}
+                  labelStyle={{ width: 150, right: undefined, textAlign: 'left', top: -18, fontSize: 11, backgroundColor: '#FFFFFFDD' }} />
+                {d.color.sampleBox && <View style={[styles.overlayBox, toStyle(d.color.sampleBox), { borderColor: color, borderWidth: 1, borderStyle: 'dashed', backgroundColor: 'transparent' }]} />}
+              </View>;
+            })}
 
             {marker && (
               <View style={[styles.markerWrap, { left: marker.x - 18, top: marker.y - 18 }]}>
@@ -1020,7 +840,7 @@ function CameraPage({ goHome, addToAlbum }) {
 
         <Text style={styles.cameraHint}>
           {photoUri
-            ? 'Tap the captured photo to measure an 11 × 11 color area.'
+            ? 'Tap the photo to inspect color. Solid outlines show detections; dashed outlines show sampled regions.'
             : 'Tap the image to mark the reading/sample location.'}
         </Text>
 
@@ -1089,6 +909,12 @@ function CameraPage({ goHome, addToAlbum }) {
           </View>
         ) : null}
 
+        {Platform.OS === 'web' && <TouchableOpacity
+          style={[styles.secondaryButton, (isAnalyzing || isUploading || isTakingPhoto) && styles.buttonDisabled]}
+          onPress={choosePhoto} disabled={isAnalyzing || isUploading || isTakingPhoto}>
+          <Text style={styles.secondaryButtonText}>Choose Photo</Text>
+        </TouchableOpacity>}
+        {selectedTest !== 'ferrous' && <Text style={styles.cameraHint}>AI detection is trained for Ferrous only. Manual point sampling is still available.</Text>}
         <View style={styles.cameraActions}>
           {photoUri ? (
             <>
@@ -1099,6 +925,8 @@ function CameraPage({ goHome, addToAlbum }) {
                 ]}
                 onPress={() => {
                   pointMeasurementIdRef.current += 1;
+                  photoLoadIdRef.current += 1;
+                  clearAnalysis();
                   setPhotoUri(null);
                   setUploadMessage('');
                   setMarker(null);
@@ -1108,7 +936,7 @@ function CameraPage({ goHome, addToAlbum }) {
                   setAnalysisResult(null);
                   setAnalysisError('');
                 }}
-                disabled={isUploading}
+                disabled={isUploading || isAnalyzing}
               >
                 <Text style={styles.secondaryButtonText}>Retake</Text>
               </TouchableOpacity>
@@ -1143,12 +971,12 @@ function CameraPage({ goHome, addToAlbum }) {
                   isAnalyzing && styles.buttonDisabled,
                 ]}
                 onPress={analyzeSample}
-                disabled={isAnalyzing}
+                disabled={isAnalyzing || selectedTest !== 'ferrous' || Platform.OS !== 'web'}
               >
                 <Text style={styles.primaryButtonText}>
                   {isAnalyzing
                     ? 'Analyzing...'
-                    : 'Measure Sample Color'}
+                    : 'Detect & Measure Colors'}
                 </Text>
               </TouchableOpacity>
 
@@ -1158,138 +986,30 @@ function CameraPage({ goHome, addToAlbum }) {
                 </Text>
               ) : null}
 
-              {analysisResult ? (
-                <View
-                  style={{
-                    width: '100%',
-                    maxWidth: 620,
-                    padding: 16,
-                    borderRadius: 18,
-                    borderWidth: 1,
-                    borderColor: theme.line,
-                    backgroundColor: theme.card,
-                    gap: 10,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: theme.ink,
-                      fontSize: 18,
-                      fontWeight: '900',
-                    }}
-                  >
-                    Demo Sample Measurement
-                  </Text>
-
-                  <Text
-                    style={{
-                      color: '#7C3AED',
-                      fontWeight: '800',
-                    }}
-                  >
-                    Fixed sample box · No gray-reference correction
-                  </Text>
-
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <Text style={{ color: theme.muted }}>
-                      Median RGB
-                    </Text>
-
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 8,
-                      }}
-                    >
-                      <View
-                        style={{
-                          width: 24,
-                          height: 24,
-                          borderRadius: 6,
-                          borderWidth: 1,
-                          borderColor: theme.line,
-                          backgroundColor: `rgb(
-              ${Math.round(analysisResult.rgb.r)},
-              ${Math.round(analysisResult.rgb.g)},
-              ${Math.round(analysisResult.rgb.b)}
-            )`,
-                        }}
-                      />
-
-                      <Text
-                        style={{
-                          color: theme.ink,
-                          fontWeight: '900',
-                        }}
-                      >
-                        {Math.round(analysisResult.rgb.r)},{' '}
-                        {Math.round(analysisResult.rgb.g)},{' '}
-                        {Math.round(analysisResult.rgb.b)}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <Text style={{ color: theme.muted }}>
-                      CIELAB
-                    </Text>
-
-                    <Text
-                      style={{
-                        color: theme.ink,
-                        fontWeight: '900',
-                      }}
-                    >
-                      {analysisResult.lab.l.toFixed(1)},{' '}
-                      {analysisResult.lab.a.toFixed(1)},{' '}
-                      {analysisResult.lab.b.toFixed(1)}
-                    </Text>
-                  </View>
-
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <Text style={{ color: theme.muted }}>
-                      Usable pixels
-                    </Text>
-
-                    <Text
-                      style={{
-                        color: theme.ink,
-                        fontWeight: '900',
-                      }}
-                    >
-                      {(analysisResult.usablePixelRatio * 100).toFixed(0)}%
-                    </Text>
-                  </View>
-
-                  <Text
-                    style={{
-                      color: theme.muted,
-                      fontSize: 12,
-                      lineHeight: 18,
-                    }}
-                  >
-                    Prototype measurement only. Concentration
-                    prediction has not been calibrated.
-                  </Text>
-                </View>
-              ) : null}
+              {analysisResult && <View style={{ width: '100%', maxWidth: 620, gap: 12 }}>
+                <Text style={styles.pointColorTitle}>Detected Colors</Text>
+                <Text style={styles.pointColorSecondary}>Median RGB and CIELAB (sRGB/D65). Gray correction and ppm prediction are not yet calibrated.</Text>
+                {analysisResult.warnings.map(message => <Text key={message} style={styles.uploadError}>{message}</Text>)}
+                {analysisResult.detections.map((d, index) => {
+                  const lab = d.color.rgb ? rgbToLab(d.color.rgb) : null;
+                  return <View key={index} style={[styles.pointColorCard, { width: '100%' }]}>
+                    <Text style={styles.pointColorTitle}>{d.classId === 0 ? 'Strip' : 'Gray Reference'} {index + 1}</Text>
+                    <Text style={styles.pointColorSecondary}>Detection confidence: {(d.score * 100).toFixed(1)}%</Text>
+                    {d.color.error ? <Text style={styles.uploadError}>{d.color.error}</Text> : <>
+                      <View style={styles.pointColorContent}>
+                        <View style={[styles.pointColorSwatch, { backgroundColor: rgbToHex(d.color.rgb) }]} />
+                        <View style={styles.pointColorValues}>
+                          <Text style={styles.pointColorValue}>RGB {Math.round(d.color.rgb.r)}, {Math.round(d.color.rgb.g)}, {Math.round(d.color.rgb.b)}</Text>
+                          <Text style={styles.pointColorValue}>HEX {rgbToHex(d.color.rgb)}</Text>
+                          <Text style={styles.pointColorSecondary}>Lab {lab.l.toFixed(1)}, {lab.a.toFixed(1)}, {lab.b.toFixed(1)}</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.pointColorSecondary}>{d.color.pixelCount.toLocaleString()} sampled pixels · center {d.classId === 0 ? '60%' : '70%'} of width and height</Text>
+                      {d.color.clippedRatio > 0.1 && <Text style={styles.uploadError}>Some pixels have near-clipped channels. Check exposure and glare.</Text>}
+                    </>}
+                  </View>;
+                })}
+              </View>}
 
               {uploadMessage ? (
                 <Text
